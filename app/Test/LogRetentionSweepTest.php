@@ -103,6 +103,42 @@ class LogRetentionSweepTest extends TestCase
         $this->assertSame(0, $result['batches']);
     }
 
+    public function testMaximumBatchSizeIsAccepted(): void
+    {
+        $result = (new LogRetentionSweep(LogRetentionSweep::MAX_BATCH_SIZE))->run(
+            0, 50001, new DateTimeImmutable(),
+            static function ($cursor) { return $cursor + 1; },
+            function ($first, $last) {
+                $this->assertLessThanOrEqual(LogRetentionSweep::MAX_BATCH_SIZE, $last - $first + 1);
+                return 0;
+            },
+            static function () {},
+            static function () { return true; }
+        );
+        $this->assertSame(2, $result['batches']);
+        $this->assertTrue($result['complete']);
+    }
+
+    public function testOversizedBatchIsRejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new LogRetentionSweep(LogRetentionSweep::MAX_BATCH_SIZE + 1);
+    }
+
+    public function testPolicyChangeAfterNextIdPreventsBatchAndCheckpoint(): void
+    {
+        $allowed = true;
+        $result = (new LogRetentionSweep())->run(
+            0, 10, new DateTimeImmutable(),
+            static function () use (&$allowed) { $allowed = false; return 1; },
+            function () { $this->fail('Batch executed after policy change.'); },
+            function () { $this->fail('Checkpoint advanced after policy change.'); },
+            static function () use (&$allowed) { return $allowed; }
+        );
+        $this->assertSame(0, $result['cursor']);
+        $this->assertFalse($result['complete']);
+    }
+
     public function testInvalidBatchResultCannotAdvanceCursor(): void
     {
         $this->expectException(UnexpectedValueException::class);

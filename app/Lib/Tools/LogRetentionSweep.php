@@ -8,12 +8,15 @@ declare(strict_types=1);
  */
 final class LogRetentionSweep
 {
+    public const DEFAULT_BATCH_SIZE = 10000;
+    public const MAX_BATCH_SIZE = 50000;
+
     private $batchSize;
 
-    public function __construct(int $batchSize = 10000)
+    public function __construct(int $batchSize = self::DEFAULT_BATCH_SIZE)
     {
-        if ($batchSize < 1) {
-            throw new InvalidArgumentException('Batch size must be positive.');
+        if ($batchSize < 1 || $batchSize > self::MAX_BATCH_SIZE) {
+            throw new InvalidArgumentException('Batch size must be between 1 and ' . self::MAX_BATCH_SIZE . '.');
         }
         $this->batchSize = $batchSize;
     }

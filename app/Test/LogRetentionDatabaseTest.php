@@ -234,6 +234,16 @@ class LogRetentionDatabaseTest extends TestCase
         new LogRetentionDatabase(new RetentionDatabaseTestModel('Log', 'logs', $this->pdo, $this->prefix));
     }
 
+    public function testMaximumBatchRangeMatchesSweepLimit(): void
+    {
+        $this->seed('logs');
+        $db = $this->adapter('Log', 'logs');
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $this->assertSame(3, $db->processBatch(1, LogRetentionSweep::MAX_BATCH_SIZE, $cutoff, true));
+        $this->expectException(InvalidArgumentException::class);
+        $db->processBatch(1, LogRetentionSweep::MAX_BATCH_SIZE + 1, $cutoff, true);
+    }
+
     public function testDeletionWithoutLockIsRejected(): void
     {
         $this->seed('logs');

@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/LogRetentionSweep.php';
+
 /**
  * Database operations for the three supported log tables.
  * Use the same PDO session for advisory locking and deletion.
@@ -164,7 +166,7 @@ final class LogRetentionDatabase
 
     public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun): int
     {
-        if ($first < 1 || $last < $first || $last - $first >= 10000) {
+        if ($first < 1 || $last < $first || $last - $first >= LogRetentionSweep::MAX_BATCH_SIZE) {
             throw new InvalidArgumentException('Invalid retention batch bounds.');
         }
         $where = " WHERE id >= ? AND id <= ? AND created < ?";
