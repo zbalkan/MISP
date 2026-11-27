@@ -341,6 +341,20 @@ class LogRetentionDatabaseTest extends TestCase
             $this->assertSame([2], $this->ids($table));
         }
         $this->assertSame(0, (int)$this->pdo->query("SELECT COUNT(*) FROM " . $this->table('admin_settings'))->fetchColumn());
+
+        // Exercise the original public access-log method with a non-UTC cutoff.
+        $model = (new ReflectionClass('AccessLog'))->newInstanceWithoutConstructor();
+        $model->alias = 'AccessLog';
+        $model->table = 'access_logs';
+        $model->retentionDatasource = new RetentionDatabaseTestModel('AccessLog', 'access_logs', $this->pdo, $this->prefix);
+        $this->pdo->exec("INSERT INTO " . $this->table('access_logs') . " (id, created) VALUES
+            (10000, '2025-12-31 09:59:59.9999'), (10001, '2025-12-31 10:00:00'),
+            (30000, '2025-12-30 00:00:00')");
+        $cutoff = new DateTime('2025-12-31 12:00:00', new DateTimeZone('Europe/Tallinn'));
+        $this->assertSame(2, $model->deleteOldLogs($cutoff));
+        $this->assertSame([2, 10001], $this->ids('access_logs'));
+        $this->assertSame('2025-12-31 12:00:00+02:00', $cutoff->format('Y-m-d H:i:sP'));
+        $this->assertSame(0, (int)$this->pdo->query("SELECT COUNT(*) FROM " . $this->table('admin_settings'))->fetchColumn());
     }
 
     public function testDeletionWithoutLockIsRejected(): void

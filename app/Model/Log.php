@@ -361,8 +361,6 @@ class Log extends AppModel
         $this->createLogEntry($user, $action, $model, 0, $title, $change);
     }
 
-    // to combat a certain bug that causes the upgrade scripts to loop without being able to set the correct version
-    // this function remedies a fixed upgrade bug instance by eliminating the massive number of erroneous upgrade log entries
     /**
      * Execute one bounded retention sweep. The caller supplies a fresh policy
      * reader and, for local timestamps, the established writer timezone.
@@ -372,6 +370,8 @@ class Log extends AppModel
         return LogRetentionService::run($this, $readPolicy, $dryRun, $logTimezone, $persistCheckpoint);
     }
 
+    // to combat a certain bug that causes the upgrade scripts to loop without being able to set the correct version
+    // this function remedies a fixed upgrade bug instance by eliminating the massive number of erroneous upgrade log entries
     public function pruneUpdateLogs($jobId = false, $user)
     {
         $max = $this->find('first', array('fields' => array('MAX(id) AS lastid')));

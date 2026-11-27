@@ -187,15 +187,7 @@ class AccessLog extends AppModel
      */
     public function deleteOldLogs(DateTime $duration)
     {
-        $this->deleteAll([
-            ['created <' => $duration->format('Y-m-d H:i:s.u')],
-        ], false);
-
-        $deleted = $this->getAffectedRows();
-        if ($deleted > 100) {
-            $this->getDataSource()->query($this->getSqlDialect()->optimizeTable($this->table));
-        }
-        return $deleted;
+        return LogRetentionService::deleteAccessLogsBefore($this, DateTimeImmutable::createFromMutable($duration));
     }
 
     /**

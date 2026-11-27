@@ -28,8 +28,7 @@ final class LogRetentionRunner
         if (!$database->acquireLock()) {
             return ['status' => 'busy', 'reason' => 'busy', 'complete' => false, 'affected' => 0, 'dryRun' => $dryRun];
         }
-        $failure = null;
-        try {
+        return $this->withOwnedLock($database, function () use ($database, $readPolicy, $days, $dryRun, $runtimeSeconds, $delayMicroseconds, $persistCheckpoint) {
             $started = hrtime(true);
             $timezone = $database->storageTimezone();
             $cutoff = LogRetentionPolicy::cutoff($days, new DateTimeImmutable('now', $timezone));
@@ -81,6 +80,56 @@ final class LogRetentionRunner
             $result['status'] = $result['complete'] ? 'complete' : 'partial';
             $result['reason'] = $reason;
             return $result;
+        });
+    }
+
+    /**
+     * Compatibility entry point for an explicit absolute cutoff. Preserve the
+     * legacy full-sweep return contract without touching scheduled checkpoints.
+     * Transactions are bounded; this manual operation has no sweep time limit.
+     */
+    public function runFixedCutoff($database, DateTimeImmutable $cutoff): int
+    {
+        if ($cutoff > new DateTimeImmutable()) {
+            throw new InvalidArgumentException('Retention cutoff must not be in the future.');
+        }
+        if (!$database->acquireLock()) {
+            throw new RuntimeException('Another retention operation owns the database lock.');
+        }
+        return $this->withOwnedLock($database, function () use ($database, $cutoff) {
+            $firstBatch = true;
+            $result = (new LogRetentionSweep())->run(
+                0,
+                $database->highWaterMark(),
+                $cutoff,
+                function ($cursor, $high) use ($database, &$firstBatch) {
+                    if (!$firstBatch) {
+                        usleep(200000);
+                    }
+                    $firstBatch = false;
+                    return $database->nextId($cursor, $high);
+                },
+                [$database, 'processBatch'],
+                static function () {},
+                static function () use ($database, $cutoff) {
+                    if (!$database->ownsLock()) {
+                        throw new RuntimeException('Retention lock lost.');
+                    }
+                    if ($cutoff > new DateTimeImmutable()) {
+                        throw new RuntimeException('System clock moved before the retention cutoff.');
+                    }
+                    return true;
+                }
+            );
+            return $result['affected'];
+        });
+    }
+
+    private function withOwnedLock($database, callable $operation)
+    {
+        $failure = null;
+        try {
+            return $operation();
         } catch (Throwable $e) {
             $failure = $e;
             throw $e;
