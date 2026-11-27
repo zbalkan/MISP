@@ -1,0 +1,82 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Traverse a snapshot of a log table's primary-key space in bounded batches.
+ * The caller owns the database lock, cutoff, checkpoint storage and time budget.
+ */
+final class LogRetentionSweep
+{
+    private $batchSize;
+
+    public function __construct(int $batchSize = 10000)
+    {
+        if ($batchSize < 1) {
+            throw new InvalidArgumentException('Batch size must be positive.');
+        }
+        $this->batchSize = $batchSize;
+    }
+
+    /**
+     * $nextId($cursor, $highWaterMark) returns the first existing ID strictly
+     * after the cursor, or null if none exists. It must throw on query failure.
+     * $processBatch($first, $last, $cutoff, $dryRun) counts or deletes rows
+     * strictly older than the cutoff, and returns their count only on success.
+     * A deletion must be committed before this callback returns.
+     * $saveCursor($cursor) persists progress; it is never called for a dry run.
+     * $canContinue() verifies lock ownership, current policy and execution budget.
+     */
+    public function run(
+        int $cursor,
+        int $highWaterMark,
+        DateTimeImmutable $cutoff,
+        callable $nextId,
+        callable $processBatch,
+        callable $saveCursor,
+        callable $canContinue,
+        bool $dryRun = false
+    ): array {
+        if ($cursor < 0 || $highWaterMark < $cursor) {
+            throw new InvalidArgumentException('Invalid retention sweep bounds.');
+        }
+        $affected = 0;
+        $batches = 0;
+        while ($cursor < $highWaterMark && $canContinue()) {
+            $first = $nextId($cursor, $highWaterMark);
+            if ($first === null) {
+                if (!$dryRun) {
+                    $saveCursor($highWaterMark);
+                }
+                $cursor = $highWaterMark;
+                break;
+            }
+            if (!is_int($first) || $first <= $cursor || $first > $highWaterMark) {
+                throw new UnexpectedValueException('Invalid retention batch start.');
+            }
+            // Subtract before adding to avoid overflowing at the high-water mark.
+            $last = $first + min($this->batchSize - 1, $highWaterMark - $first);
+            if (!$canContinue()) {
+                break;
+            }
+            $count = $processBatch($first, $last, $cutoff, $dryRun);
+            if (!is_int($count) || $count < 0 || $count > $last - $first + 1) {
+                throw new UnexpectedValueException('Invalid retention batch result.');
+            }
+            if (!$dryRun) {
+                $saveCursor($last);
+            }
+            $cursor = $last;
+            $affected += $count;
+            ++$batches;
+        }
+        return [
+            'cursor' => $cursor,
+            'highWaterMark' => $highWaterMark,
+            'affected' => $affected,
+            'batches' => $batches,
+            'complete' => $cursor === $highWaterMark,
+            'dryRun' => $dryRun,
+        ];
+    }
+}
