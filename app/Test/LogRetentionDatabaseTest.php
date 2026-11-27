@@ -135,6 +135,23 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testNativeInternalStateUsesAtomicUpsertWithoutCallbacks(): void
+    {
+        $model = new RetentionDatabaseTestModel('AccessLog', 'access_logs', $this->pdo, $this->prefix);
+        $dialect = $model->getSqlDialect();
+        $this->assertNull(AdminSetting::readInternalState($dialect, 'internal_test'));
+        AdminSetting::writeInternalState($dialect, 'internal_test', 'first');
+        AdminSetting::writeInternalState($dialect, 'internal_test', 'second');
+        $this->assertSame('second', AdminSetting::readInternalState($dialect, 'internal_test'));
+        $this->pdo->beginTransaction();
+        try {
+            $this->expectException(RuntimeException::class);
+            AdminSetting::writeInternalState($dialect, 'internal_test', 'third');
+        } finally {
+            $this->pdo->rollBack();
+        }
+    }
+
     public function testLockContentionAndCheckpointRecovery(): void
     {
         $a = $this->adapter('AuditLog', 'audit_logs');
@@ -543,6 +560,10 @@ class RetentionDatabaseTestModel
             class_alias(RetentionModelTestApp::class, 'App');
         }
         require_once __DIR__ . '/../Lib/Migration/SqlDialect.php';
+        if (!class_exists('AppModel', false)) {
+            class_alias(RetentionModelTestBase::class, 'AppModel');
+        }
+        require_once __DIR__ . '/../Model/AdminSetting.php';
         return new class($this) extends SqlDialect {
             public function flavour() { return self::FLAVOUR_MYSQL; }
         };

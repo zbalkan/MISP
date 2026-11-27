@@ -13,6 +13,7 @@ on:
       - 'app/Console/Command/AdminShell.php'
       - 'app/Console/Command/SchedulerWorkerShell.php'
       - 'app/Model/Task.php'
+      - 'app/Model/AdminSetting.php'
       - 'app/Lib/Migration/SqlDialect.php'
       - 'app/Controller/TasksController.php'
       - 'app/Lib/Tools/BackgroundJobs/BackgroundJob.php'
@@ -35,6 +36,7 @@ on:
       - 'app/Console/Command/AdminShell.php'
       - 'app/Console/Command/SchedulerWorkerShell.php'
       - 'app/Model/Task.php'
+      - 'app/Model/AdminSetting.php'
       - 'app/Lib/Migration/SqlDialect.php'
       - 'app/Controller/TasksController.php'
       - 'app/Lib/Tools/BackgroundJobs/BackgroundJob.php'
@@ -85,7 +87,7 @@ jobs:
         run: |
           find app/Lib/Tools app/Test -maxdepth 1 -name 'LogRetention*.php' -print0 | xargs -0 -n1 php -l
           for model in AuditLog AccessLog Log; do php -l "app/Model/$model.php" || exit 1; done
-          for file in app/Console/Command/LogShell.php app/Console/Command/AdminShell.php app/Console/Command/SchedulerWorkerShell.php app/Model/Task.php app/Lib/Migration/SqlDialect.php app/Controller/TasksController.php app/Lib/Tools/BackgroundJobs/BackgroundJob.php app/Model/Server.php app/Model/SystemSetting.php app/Config/config.default.php app/Lib/Tools/ServerSettingGroups.php app/Lib/Tools/EnvSetting.php app/Lib/Tools/ConfigSettingReader.php; do php -l "$file" || exit 1; done
+          for file in app/Console/Command/LogShell.php app/Console/Command/AdminShell.php app/Console/Command/SchedulerWorkerShell.php app/Model/Task.php app/Model/AdminSetting.php app/Lib/Migration/SqlDialect.php app/Controller/TasksController.php app/Lib/Tools/BackgroundJobs/BackgroundJob.php app/Model/Server.php app/Model/SystemSetting.php app/Config/config.default.php app/Lib/Tools/ServerSettingGroups.php app/Lib/Tools/EnvSetting.php app/Lib/Tools/ConfigSettingReader.php; do php -l "$file" || exit 1; done
       - name: Run retention unit and database tests
         env:
           MISP_RETENTION_TEST_DSN: mysql:host=127.0.0.1;port=${{ job.services.mariadb.ports[3306] }};dbname=retention_test

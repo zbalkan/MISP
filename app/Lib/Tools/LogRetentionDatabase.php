@@ -20,7 +20,6 @@ final class LogRetentionDatabase
     private $storageTimezone;
     private $table;
     private $lockName;
-    private $checkpointTable;
     private $settingsTable;
     private $checkpointKey;
     private $locked = false;
@@ -40,7 +39,6 @@ final class LogRetentionDatabase
         $db = $model->getDataSource();
         $this->connection = $db->getConnection();
         $this->table = $db->fullTableName($model);
-        $this->checkpointTable = $db->fullTableName('admin_settings');
         $this->settingsTable = $db->fullTableName('system_settings');
         $this->checkpointKey = 'log_retention_checkpoint_' . $model->table;
         $this->driver = $this->connection->getAttribute(PDO::ATTR_DRIVER_NAME);
@@ -48,6 +46,7 @@ final class LogRetentionDatabase
             throw new RuntimeException('Unsupported retention database driver.');
         }
         $this->dialect = $model->getSqlDialect();
+        App::uses('AdminSetting', 'Model');
         if ($this->dialect->flavour() !== $this->driver) {
             throw new RuntimeException('Retention datasource dialect does not match its connection.');
         }
@@ -187,8 +186,7 @@ final class LogRetentionDatabase
         if (!$this->ownsLock()) {
             throw new RuntimeException('Retention checkpoint requires an owned database lock.');
         }
-        $value = $this->scalar("SELECT value FROM {$this->checkpointTable} WHERE setting = ?", [$this->checkpointKey]);
-        return $value === false ? null : (string)$value;
+        return AdminSetting::readInternalState($this->dialect, $this->checkpointKey);
     }
 
     public function saveCheckpoint(string $value): void
@@ -196,11 +194,7 @@ final class LogRetentionDatabase
         if (!$this->ownsLock() || $this->connection->inTransaction()) {
             throw new RuntimeException('Retention checkpoint requires an owned lock and no active transaction.');
         }
-        $statement = $this->execute(
-            $this->dialect->upsert("INSERT INTO {$this->checkpointTable} (setting, value) VALUES (?, ?)", ['setting'], ['value']),
-            [$this->checkpointKey, $value]
-        );
-        $statement->closeCursor();
+        AdminSetting::writeInternalState($this->dialect, $this->checkpointKey, $value);
     }
 
     public function highWaterMark(): int

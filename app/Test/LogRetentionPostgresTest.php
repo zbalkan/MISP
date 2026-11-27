@@ -20,6 +20,10 @@ class LogRetentionPostgresTest extends TestCase
             class_alias(RetentionPostgresApp::class, 'App');
         }
         require_once __DIR__ . '/../Lib/Migration/SqlDialect.php';
+        if (!class_exists('AppModel', false)) {
+            class_alias(RetentionPostgresAppModel::class, 'AppModel');
+        }
+        require_once __DIR__ . '/../Model/AdminSetting.php';
         $this->pdo = $this->connect();
         $this->prefix = 'retention_' . bin2hex(random_bytes(6)) . '_';
         foreach (['audit_logs', 'access_logs', 'logs'] as $table) {
@@ -112,6 +116,8 @@ class RetentionPostgresApp
 {
     public static function uses($class, $package) {}
 }
+
+class RetentionPostgresAppModel {}
 
 class RetentionPostgresModel
 {
