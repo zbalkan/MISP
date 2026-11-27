@@ -112,6 +112,53 @@ output=$(MISP_SETTING_MISP__access_log_retention_days=30 cake Log retention --dr
 grep -F 'access_logs: mode=dry-run status=complete' <<< "$output"
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent')")" = 2
 
+# Interrupt a real configured CLI process while its DELETE waits for a row
+# lock. The persistent policy remains disabled, so no scheduler job competes.
+interrupt_lock="$marker-interrupt"
+"${db[@]}" -e "START TRANSACTION; SELECT id FROM access_logs WHERE request_id = '$marker-old' FOR UPDATE; SELECT GET_LOCK('$interrupt_lock', 0); SELECT SLEEP(60)" >/dev/null &
+blocker_client=$!
+deadline=$((SECONDS + 10))
+while [[ "$(query "SELECT IS_USED_LOCK('$interrupt_lock') IS NOT NULL")" != 1 ]]; do
+    if (( SECONDS >= deadline )); then
+        kill "$blocker_client" 2>/dev/null || true
+        echo 'Could not establish row-lock fixture.' >&2
+        exit 1
+    fi
+    sleep 1
+done
+blocker_id=$(query "SELECT IS_USED_LOCK('$interrupt_lock')")
+MISP_SETTING_MISP__access_log_retention_days=30 app/Console/cake Log retention >/tmp/retention-interrupted.log 2>&1 &
+retention_pid=$!
+deadline=$((SECONDS + 20))
+waiting=0
+while (( SECONDS < deadline )); do
+    waiting=$(query "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = IS_USED_LOCK('$lock_name') AND INFO LIKE 'DELETE%access_logs%'")
+    [[ "$waiting" = 1 ]] && break
+    kill -0 "$retention_pid" 2>/dev/null || break
+    sleep 1
+done
+# The cake launcher execs PHP, so this PID is the actual CLI process.
+kill -KILL "$retention_pid" 2>/dev/null || true
+interrupted_exit=0
+wait "$retention_pid" || interrupted_exit=$?
+query "KILL CONNECTION $blocker_id"
+wait "$blocker_client" || true
+test "$waiting" = 1
+test "$interrupted_exit" = 137
+deadline=$((SECONDS + 10))
+while [[ "$(query "SELECT IS_USED_LOCK('$lock_name') IS NOT NULL")" != 0 ]]; do
+    if (( SECONDS >= deadline )); then
+        echo 'Interrupted CLI session did not release its lock.' >&2
+        exit 1
+    fi
+    sleep 1
+done
+# The server may finish an in-flight statement after client death, but
+# without a subsequent COMMIT its transaction must be rolled back.
+test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent')")" = 2
+test "$(query "SELECT COUNT(*) FROM admin_settings WHERE setting = 'log_retention_checkpoint_access_logs'")" = 0
+echo 'Abrupt CLI process interruption rolled back deletion and released the advisory lock.'
+
 # The running scheduler must observe the fresh configuration, provision the
 # native task, claim it, enqueue a real job and execute the configured sweep.
 cake Admin setSetting MISP.access_log_retention_days 30
