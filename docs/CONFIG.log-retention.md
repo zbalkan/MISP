@@ -71,6 +71,16 @@ Retention requires a single writable database server, non-persistent sessions an
 
 Deleting InnoDB records makes space available for reuse but does not necessarily reduce the tablespace file size. Retention does not run `OPTIMIZE TABLE` or rebuild tables automatically. Evaluate any separate space-reclamation operation against available disk space, locking, replication and maintenance-window requirements.
 
+## Transaction recovery guarantees
+
+Deletion and checkpoint persistence are separate operations. A checkpoint advances only after the deletion transaction reports successful commit. If the process stops after commit but before checkpoint persistence, the next compatible sweep revisits the unrecorded range. Already deleted records are absent, and remaining eligible records are evaluated again. If the transaction did not commit, the database rolls it back and the same range remains eligible. This is retry-safe deletion, not exactly-once batch execution or durable cumulative deletion accounting.
+
+A commit exception stops the sweep without advancing its checkpoint. The adapter attempts rollback if the connection still reports an active transaction; a cleanup failure is reported separately. Recovery uses a fresh execution and an independently acquired advisory lock. Do not manually advance the checkpoint to compensate for an uncertain commit. Reported affected-row counts describe the current invocation and may omit deletions committed before an interrupted invocation could report them.
+
+Dedicated integration tests on MariaDB 10.11 and PostgreSQL 16 exercise forced database-session termination before and after commit, stale checkpoint recovery, and deterministic PDO commit exceptions before and after a real commit. These tests verify retained records, expired records, checkpoint state and successful subsequent execution. The injected exceptions do not reproduce network-level acknowledgement loss or all disconnected-session cleanup failures. The MySQL 8.4 topology test verifies the Group Replication configuration guard, not full transaction recovery parity.
+
+The database recovery guarantees do not automatically repair native scheduler job associations. An interrupted queued job may require the administrative recovery procedure below.
+
 ## Monitoring and disabling
 
 Inspect the managed task in scheduled task administration and its associated job in the Jobs view. CLI output and job output report category, status, cutoff, batch count, affected rows and duration. `complete` and `disabled` are successful configured outcomes; `partial` and `busy` indicate incomplete work. A category with an invalid policy or writer timezone reports `blocked` without preventing independent valid policies from running. The combined job reports incomplete. The configured `Log retention` command exits with status zero only when all categories report `complete` or `disabled`; `partial`, `busy`, `blocked` and execution errors produce a non-zero exit status. This also applies to configured dry runs. External monitoring should treat incomplete execution as a condition requiring inspection, not necessarily as a database failure. A database or cleanup exception stops the combined run rather than reuse an uncertain database session. Review worker logs and database errors when a job fails. Previously committed batches remain deleted.
