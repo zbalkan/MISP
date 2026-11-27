@@ -12,6 +12,7 @@ final class LogRetentionDatabase
     private $table;
     private $lockName;
     private $checkpointTable;
+    private $settingsTable;
     private $checkpointKey;
     private $locked = false;
 
@@ -25,6 +26,7 @@ final class LogRetentionDatabase
         $this->connection = $db->getConnection();
         $this->table = $db->fullTableName($model);
         $this->checkpointTable = $db->fullTableName('admin_settings');
+        $this->settingsTable = $db->fullTableName('system_settings');
         $this->checkpointKey = 'log_retention_checkpoint_' . $model->table;
         if ($this->connection->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
             throw new RuntimeException('Retention locking is currently supported only on MySQL and MariaDB.');
@@ -74,6 +76,12 @@ final class LogRetentionDatabase
         if ($result !== 1 && $result !== '1') {
             throw new RuntimeException('Could not release retention lock.');
         }
+    }
+
+    public function readPolicySetting(string $setting): ?string
+    {
+        $value = $this->scalar("SELECT value FROM {$this->settingsTable} WHERE setting = ?", [$setting]);
+        return $value === false ? null : (string)$value;
     }
 
     public function loadCheckpoint(): ?string
