@@ -8,6 +8,7 @@ App::uses('SystemSetting', 'Model');
 App::uses('EncryptedValue', 'Tools');
 App::uses('GitTool', 'Tools');
 App::uses('ProcessTool', 'Tools');
+App::uses('LogRetentionPolicy', 'Tools');
 
 /**
  * @property-read array $serverSettings
@@ -2110,6 +2111,26 @@ class Server extends AppModel
         return true;
     }
 
+    public function testLogRetentionDays($value)
+    {
+        try {
+            LogRetentionPolicy::parse($value);
+            return true;
+        } catch (InvalidArgumentException $e) {
+            return __($e->getMessage());
+        }
+    }
+
+    public function testLogRetentionTimezone($value)
+    {
+        try {
+            LogRetentionPolicy::normaliseSetting(LogRetentionPolicy::TIMEZONE_SETTING, $value);
+            return true;
+        } catch (InvalidArgumentException $e) {
+            return __($e->getMessage());
+        }
+    }
+
     public function testForPositiveInteger($value)
     {
         if ((is_int($value) && $value >= 0) || ctype_digit($value)) {
@@ -2995,6 +3016,16 @@ class Server extends AppModel
      */
     public function serverSettingsEditValue($user, array $setting, $value, $forceSave = false, $cli = false)
     {
+        // Retention is destructive: validate the raw value before trimming or
+        // numeric coercion, including when the caller requests a forced save.
+        $retentionSetting = LogRetentionPolicy::isSetting($setting['name']);
+        if ($retentionSetting) {
+            try {
+                $value = LogRetentionPolicy::normaliseSetting($setting['name'], $value);
+            } catch (InvalidArgumentException $e) {
+                return __($e->getMessage());
+            }
+        }
         if (isset($setting['beforeHook'])) {
             $beforeResult = $this->{$setting['beforeHook']}($setting['name'], $value);
             if ($beforeResult !== true) {
@@ -3004,7 +3035,7 @@ class Server extends AppModel
             }
         }
         if ($value !== null) {
-            $value = self::normaliseSettingValue($setting, trim($value));
+            $value = $retentionSetting ? $value : self::normaliseSettingValue($setting, trim($value));
             if (isset($setting['test'])) {
                 if ($setting['test'] instanceof Closure) {
                     $testResult = $setting['test']($value);
@@ -3075,6 +3106,9 @@ class Server extends AppModel
      */
     public function serverSettingsSaveValue($setting, $value, $fileOnly = false)
     {
+        if (LogRetentionPolicy::isSetting($setting)) {
+            $value = LogRetentionPolicy::normaliseSetting($setting, $value);
+        }
         if (!$fileOnly && Configure::read('MISP.system_setting_db')) {
             /** @var SystemSetting $systemSetting */
             $systemSetting = ClassRegistry::init('SystemSetting');
@@ -6761,6 +6795,38 @@ class Server extends AppModel
                     'test' => 'testBool',
                     'type' => 'boolean',
                 ),
+                'audit_log_retention_days' => [
+                    'level' => self::SETTING_OPTIONAL,
+                    'description' => __('Audit log retention. Permanently deletes older database audit records when retention runs. Historical event changes may become unavailable. Whole calendar days (0 disables retention; maximum 36500). Saving this setting does not delete records. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
+                    'value' => 0,
+                    'test' => 'testLogRetentionDays',
+                    'type' => 'numeric',
+                    'null' => true,
+                ],
+                'access_log_retention_days' => [
+                    'level' => self::SETTING_OPTIONAL,
+                    'description' => __('Access log retention. Permanently deletes older database access records when retention runs. Whole calendar days (0 disables retention; maximum 36500). Saving this setting does not delete records. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
+                    'value' => 0,
+                    'test' => 'testLogRetentionDays',
+                    'type' => 'numeric',
+                    'null' => true,
+                ],
+                'log_retention_days' => [
+                    'level' => self::SETTING_OPTIONAL,
+                    'description' => __('Application log retention. Permanently deletes older database application logs when retention runs. Historical event changes, recovery information, login trust information and statistics may become unavailable. Whole calendar days (0 disables retention; maximum 36500). Saving this setting does not delete records. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
+                    'value' => 0,
+                    'test' => 'testLogRetentionDays',
+                    'type' => 'numeric',
+                    'null' => true,
+                ],
+                'log_retention_timezone' => [
+                    'level' => self::SETTING_OPTIONAL,
+                    'description' => __('IANA timezone used to write historical audit and application logs, for example UTC or Europe/Tallinn. Use unconfigured to prevent configured retention of these tables until the writer timezone is established. Access logs always use UTC. Changing this setting does not rewrite historical timestamps.'),
+                    'value' => 'unconfigured',
+                    'test' => 'testLogRetentionTimezone',
+                    'type' => 'string',
+                    'null' => true,
+                ],
                 'log_skip_db_logs_completely' => array(
                     'level' => 0,
                     'description' => __('This functionality allows you to completely disable any logs from being saved in your SQL backend. This is HIGHLY advised against, you lose all the functionalities provided by the audit log subsystem along with the event history (as these are built based on the logs on the fly). Only enable this if you understand and accept the associated risks.'),

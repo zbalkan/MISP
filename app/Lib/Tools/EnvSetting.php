@@ -1,5 +1,6 @@
 <?php
 App::uses('SystemSetting', 'Model');
+App::uses('LogRetentionPolicy', 'Tools');
 
 /**
  * Loads MISP settings from environment variables as a third configuration
@@ -64,7 +65,17 @@ class EnvSetting
             if (!in_array($firstPart, SystemSetting::ALLOWED_CATEGORIES, true)) {
                 continue;
             }
-            $settings[$settingName] = self::castValue($value);
+            if (LogRetentionPolicy::isSetting($settingName)) {
+                try {
+                    $settings[$settingName] = LogRetentionPolicy::normaliseSetting($settingName, $value);
+                } catch (InvalidArgumentException $e) {
+                    // Keep invalid input visible to the settings validator.
+                    // Retention independently rejects it at execution time.
+                    $settings[$settingName] = $value;
+                }
+            } else {
+                $settings[$settingName] = self::castValue($value);
+            }
         }
         return $settings;
     }

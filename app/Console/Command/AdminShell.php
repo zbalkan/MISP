@@ -3,6 +3,7 @@ App::uses('AppShell', 'Console/Command');
 App::uses('ProcessTool', 'Tools');
 App::uses('FileAccessTool', 'Tools');
 App::uses('JsonTool', 'Tools');
+App::uses('LogRetentionPolicy', 'Tools');
 App::uses('AbstractMigration', 'Migration');
 App::uses('MigrationManager', 'Migration');
 App::uses('AbstractGrammar', 'Migration/Grammar');
@@ -822,8 +823,8 @@ class AdminShell extends AppShell
             $this->error(__('Setting change rejected.'), $message);
         }
 
-        // Convert value to boolean, int or float
-        if ($value !== null) {
+        // Convert value to boolean, int or float. Retention validates the raw token.
+        if ($value !== null && !LogRetentionPolicy::isSetting($settingName)) {
             if ($setting['type'] === 'boolean') {
                 $value = $this->toBoolean($value);
             } else if ($setting['type'] === 'numeric') {
@@ -846,6 +847,9 @@ class AdminShell extends AppShell
         if ($result === true) {
             $this->out(__('Setting "%s" changed to %s', $settingName, is_string($value) ? '"' . $value . '"' : json_encode($value)));
         } else {
+            if (LogRetentionPolicy::isSetting($settingName)) {
+                return $this->error(__('Setting change rejected.'), $result);
+            }
             $message = __("The setting change was rejected. MISP considers the requested setting value as invalid and would lead to the following error:\n\n\"%s\"\n\nIf you still want to force this change, please supply the --force argument.\n", $result);
             $this->error(__('Setting change rejected.'), $message);
         }

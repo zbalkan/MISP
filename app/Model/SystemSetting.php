@@ -1,4 +1,5 @@
 <?php
+App::uses('LogRetentionPolicy', 'Tools');
 App::uses('AppModel', 'Model');
 App::uses('EncryptedValue', 'Tools');
 App::uses('BetterSecurity', 'Tools');
@@ -93,6 +94,9 @@ class SystemSetting extends AppModel
      */
     public function setSetting($setting, $value)
     {
+        if (LogRetentionPolicy::isSetting($setting)) {
+            $value = LogRetentionPolicy::normaliseSetting($setting, $value);
+        }
         $firstPart = explode('.', $setting)[0];
         if (!in_array($firstPart, self::ALLOWED_CATEGORIES, true) || in_array($setting, self::BLOCKED_SETTINGS, true)) {
             return false; // blocked setting
