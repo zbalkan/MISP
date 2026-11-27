@@ -413,6 +413,24 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testManagedRetentionBlockDiagnostics(): void
+    {
+        $task = ['type' => 'Admin', 'action' => Task::RETENTION_ACTION, 'enabled' => true,
+            'user_id' => 0, 'timer' => Task::RETENTION_INTERVAL, 'next_execution_time' => 100, 'last_job_id' => 7];
+        $this->assertStringContainsString('missing job 7', Task::retentionBlockReason($task, null, 100));
+        foreach ([Job::STATUS_CREATED, Job::STATUS_WAITING, Job::STATUS_RUNNING] as $status) {
+            $this->assertStringContainsString('nonterminal job 7', Task::retentionBlockReason($task, ['id' => 7, 'status' => $status], 100));
+        }
+        foreach ([Job::STATUS_FAILED, Job::STATUS_COMPLETED] as $status) {
+            $this->assertNull(Task::retentionBlockReason($task, ['id' => 7, 'status' => $status], 100));
+        }
+        $this->assertStringContainsString('unexpected status 99', Task::retentionBlockReason($task, ['id' => 7, 'status' => 99], 100));
+        $this->assertNull(Task::retentionBlockReason($task, null, 99));
+        $this->assertNull(Task::retentionBlockReason(array_replace($task, ['enabled' => false]), null, 100));
+        $this->assertNull(Task::retentionBlockReason(array_replace($task, ['last_job_id' => null]), null, 100));
+        $this->assertStringContainsString('owner or interval', Task::retentionBlockReason(array_replace($task, ['timer' => 1]), null, 100));
+    }
+
     public function testProvisioningLockIsIndependentOfDeletion(): void
     {
         $make = function (PDO $pdo, bool $provisioning) {
