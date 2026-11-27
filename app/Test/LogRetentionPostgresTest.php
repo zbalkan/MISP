@@ -91,6 +91,38 @@ class LogRetentionPostgresTest extends TestCase
         }
     }
 
+    public function testTransactionalInternalStateAndDeletion(): void
+    {
+        $dialect = $this->model('AccessLog', 'access_logs')->getSqlDialect();
+        $observer = $this->connect();
+        $observerDialect = $this->model('AccessLog', 'access_logs', $observer)->getSqlDialect();
+        $table = $this->table('access_logs');
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2000-01-01')");
+        AdminSetting::writeInternalState($dialect, 'internal_test', 'before');
+        foreach ([false, true] as $commit) {
+            $this->pdo->beginTransaction();
+            try {
+                $this->pdo->exec("DELETE FROM $table WHERE id = 1");
+                AdminSetting::writeInternalState($dialect, 'internal_test', 'after');
+                $this->assertTrue($this->pdo->inTransaction());
+                $this->assertSame('after', AdminSetting::readInternalState($dialect, 'internal_test'));
+                $this->assertSame('before', AdminSetting::readInternalState($observerDialect, 'internal_test'));
+                $this->assertSame(1, (int)$observer->query("SELECT COUNT(*) FROM $table")->fetchColumn());
+                if ($commit) {
+                    $this->pdo->commit();
+                } else {
+                    $this->pdo->rollBack();
+                }
+            } finally {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+            }
+            $this->assertSame($commit ? 'after' : 'before', AdminSetting::readInternalState($observerDialect, 'internal_test'));
+            $this->assertSame($commit ? 0 : 1, (int)$observer->query("SELECT COUNT(*) FROM $table")->fetchColumn());
+        }
+    }
+
     public function testConfiguredPolicyReadsByteaAndLegacyCutoffRemainsAvailable(): void
     {
         $settings = $this->table('system_settings');
