@@ -6809,7 +6809,7 @@ class Server extends AppModel
                     'value' => 0,
                     'test' => 'testLogRetentionDays',
                     'type' => 'numeric',
-                    'null' => true,
+                    'null' => false,
                 ],
                 'access_log_retention_days' => [
                     'level' => self::SETTING_OPTIONAL,
@@ -6817,7 +6817,7 @@ class Server extends AppModel
                     'value' => 0,
                     'test' => 'testLogRetentionDays',
                     'type' => 'numeric',
-                    'null' => true,
+                    'null' => false,
                 ],
                 'log_retention_days' => [
                     'level' => self::SETTING_OPTIONAL,
@@ -6825,7 +6825,7 @@ class Server extends AppModel
                     'value' => 0,
                     'test' => 'testLogRetentionDays',
                     'type' => 'numeric',
-                    'null' => true,
+                    'null' => false,
                 ],
                 'log_retention_timezone' => [
                     'level' => self::SETTING_OPTIONAL,
@@ -6833,7 +6833,7 @@ class Server extends AppModel
                     'value' => 'unconfigured',
                     'test' => 'testLogRetentionTimezone',
                     'type' => 'string',
-                    'null' => true,
+                    'null' => false,
                 ],
                 'log_skip_db_logs_completely' => array(
                     'level' => 0,
