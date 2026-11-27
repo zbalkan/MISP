@@ -11,6 +11,8 @@ final class LogRetentionDatabase
     private $connection;
     private $table;
     private $lockName;
+    private $checkpointTable;
+    private $checkpointKey;
     private $locked = false;
 
     public function __construct($model)
@@ -22,6 +24,8 @@ final class LogRetentionDatabase
         $db = $model->getDataSource();
         $this->connection = $db->getConnection();
         $this->table = $db->fullTableName($model);
+        $this->checkpointTable = $db->fullTableName('admin_settings');
+        $this->checkpointKey = 'log_retention_checkpoint_' . $model->table;
         if ($this->connection->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
             throw new RuntimeException('Retention locking is currently supported only on MySQL and MariaDB.');
         }
@@ -70,6 +74,27 @@ final class LogRetentionDatabase
         if ($result !== 1 && $result !== '1') {
             throw new RuntimeException('Could not release retention lock.');
         }
+    }
+
+    public function loadCheckpoint(): ?string
+    {
+        if (!$this->ownsLock()) {
+            throw new RuntimeException('Retention checkpoint requires an owned database lock.');
+        }
+        $value = $this->scalar("SELECT value FROM {$this->checkpointTable} WHERE setting = ?", [$this->checkpointKey]);
+        return $value === false ? null : (string)$value;
+    }
+
+    public function saveCheckpoint(string $value): void
+    {
+        if (!$this->ownsLock() || $this->connection->inTransaction()) {
+            throw new RuntimeException('Retention checkpoint requires an owned lock and no active transaction.');
+        }
+        $statement = $this->execute(
+            "INSERT INTO {$this->checkpointTable} (setting, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?",
+            [$this->checkpointKey, $value, $value]
+        );
+        $statement->closeCursor();
     }
 
     public function highWaterMark(): int
