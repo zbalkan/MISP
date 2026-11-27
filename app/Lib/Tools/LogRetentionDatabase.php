@@ -322,7 +322,7 @@ final class LogRetentionDatabase
     }
 
     /**
-     * Execute one bounded keyset batch and persist its checkpoint atomically.
+     * Execute one bounded range batch and persist its checkpoint atomically.
      * The caller supplies the validated sweep identity under the advisory lock.
      */
     public function executeBatch(int $days, DateTimeImmutable $cutoff, int $cursor, int $highWaterMark, int $batchSize = 10000): array
@@ -339,23 +339,19 @@ final class LogRetentionDatabase
         }
         $committing = false;
         try {
-            // Lock selected existing rows and obtain only their upper boundary.
-            // Validate the affected-row bound before committing.
-            $last = $this->scalar("SELECT MAX(id) FROM (SELECT id FROM {$this->table}
-                WHERE id > ? AND id <= ? ORDER BY id LIMIT $batchSize FOR UPDATE) AS batch", [$cursor, $highWaterMark]);
+            // A bounded numeric range is portable and guarantees that even
+            // concurrent inserts cannot expand the deletion beyond batchSize.
+            // Skip empty gaps using the primary-key index.
+            $first = $this->nextId($cursor, $highWaterMark);
             $count = 0;
-            if ($last === null || $last === false) {
-                $last = $highWaterMark;
-            } else {
-                $last = (int)$last;
-                $params = [$cursor, $last, $this->storageCutoff($cutoff)];
-                // A concurrent insertion into the selected range must not
-                // silently exceed the bound or advance past an undeleted row.
-                // Abort the entire transaction if the range has grown too large.
-                $statement = $this->execute("DELETE FROM {$this->table} WHERE id > ? AND id <= ? AND created < ?", $params);
+            $last = $highWaterMark;
+            if ($first !== null) {
+                $last = $first + min($batchSize - 1, $highWaterMark - $first);
+                $statement = $this->execute("DELETE FROM {$this->table} WHERE id >= ? AND id <= ? AND created < ?",
+                    [$first, $last, $this->storageCutoff($cutoff)]);
                 $count = $statement->rowCount();
                 $statement->closeCursor();
-                if ($count < 0 || $count > $batchSize) {
+                if ($count < 0 || $count > $last - $first + 1) {
                     throw new RuntimeException('Retention batch exceeded its deletion bound.');
                 }
             }
