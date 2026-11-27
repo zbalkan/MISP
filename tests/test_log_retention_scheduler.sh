@@ -96,3 +96,35 @@ test "$(query "SELECT COUNT(*) FROM jobs WHERE id = $job_id")" = 1
 test "$(query "SELECT COUNT(*) FROM jobs WHERE id = $historical_id")" = 0
 test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE id = $task_id AND last_job_id = $job_id")" = 1
 echo 'Managed task and current job protected through the live administration API.'
+
+# Exercise the next native schedule without waiting a day. Disable the policy
+# before making the task due; the running scheduler must leave it untouched.
+cake Admin setSetting MISP.access_log_retention_days 0
+query "INSERT INTO access_logs
+    (created, user_id, org_id, request_method, request_id, controller, action, url, response_code, memory_usage, duration, query_count)
+    VALUES ('2000-01-01 00:00:00', 0, 0, 0, '$marker-second-old', 'retention_test', 'index', '/retention-test', 200, 0, 0, 0)"
+query "UPDATE scheduled_tasks SET next_execution_time = UNIX_TIMESTAMP() - 1 WHERE id = $task_id AND last_job_id = $job_id"
+# Observe more than two scheduler polling intervals.
+sleep 25
+test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE id = $task_id AND last_job_id = $job_id AND next_execution_time <= UNIX_TIMESTAMP()")" = 1
+test "$(query "SELECT COUNT(*) FROM jobs WHERE $job_where")" = 1
+test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-second-old'")" = 1
+
+cake Admin setSetting MISP.access_log_retention_days 30
+deadline=$((SECONDS + 180))
+state=''
+while (( SECONDS < deadline )); do
+    state=$(query "SELECT j.status FROM scheduled_tasks t JOIN jobs j ON j.id = t.last_job_id WHERE t.id = $task_id AND j.id != $job_id")
+    case "$state" in
+        4) break ;;
+        3) echo 'Second retention execution failed.' >&2; exit 1 ;;
+    esac
+    sleep 2
+done
+test "$state" = 4
+test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE $task_where")" = 1
+test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE id = $task_id AND last_job_id != $job_id AND next_execution_time > UNIX_TIMESTAMP()")" = 1
+test "$(query "SELECT COUNT(*) FROM jobs WHERE $job_where")" = 2
+test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-second-old'")" = 0
+test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-recent'")" = 1
+echo 'Disabled policy, managed task reuse and subsequent native execution verified.'
