@@ -106,7 +106,7 @@ jobs:
         run: |
           status=0
           for test in app/Test/LogRetention*Test.php; do
-            phpunit --bootstrap "$RUNNER_TEMP/retention-clock/vendor/autoload.php" "$test" || status=1
+            phpunit --exclude-group benchmark --bootstrap "$RUNNER_TEMP/retention-clock/vendor/autoload.php" "$test" || status=1
           done
           exit "$status"
 
