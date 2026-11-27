@@ -51,7 +51,7 @@ final class LogRetentionCheckpoint
                 'highWaterMark' => $state['highWaterMark'],
                 'cutoff' => $localCutoff,
             ];
-        } catch (JsonException | ValueError | TypeError $e) {
+        } catch (JsonException | ValueError $e) {
             return null;
         }
     }
