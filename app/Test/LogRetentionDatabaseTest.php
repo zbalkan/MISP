@@ -74,11 +74,7 @@ class LogRetentionDatabaseTest extends TestCase
         return array_map('intval', $this->pdo->query("SELECT id FROM " . $this->table($table) . " ORDER BY id")->fetchAll(PDO::FETCH_COLUMN));
     }
 
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
-    public function testNativeTaskClaimAndJobAssociationAcrossSessions(): void
+    private function seedNativeRetentionTask(): void
     {
         class_alias(RetentionModelTestApp::class, 'App');
         class_alias(RetentionModelTestBase::class, 'AppModel');
@@ -89,12 +85,27 @@ class LogRetentionDatabaseTest extends TestCase
         $table = $this->table('scheduled_tasks');
         $jobs = $this->table('jobs');
         $this->pdo->exec("INSERT INTO $table VALUES (1, 'Admin', 'enforceLogRetention', 0, TRUE, 86400, 100, NULL, '', NULL)");
-        $a = new Task();
-        $a->table = 'scheduled_tasks';
-        $a->retentionDatasource = new RetentionDatabaseTestModel('Task', 'scheduled_tasks', $this->pdo, $this->prefix);
-        $b = new Task();
-        $b->table = 'scheduled_tasks';
-        $b->retentionDatasource = new RetentionDatabaseTestModel('Task', 'scheduled_tasks', $this->connect(), $this->prefix);
+    }
+
+    private function nativeRetentionTask(PDO $pdo): Task
+    {
+        $task = new Task();
+        $task->table = 'scheduled_tasks';
+        $task->retentionDatasource = new RetentionDatabaseTestModel('Task', 'scheduled_tasks', $pdo, $this->prefix);
+        return $task;
+    }
+
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function testNativeTaskClaimAndJobAssociationAcrossSessions(): void
+    {
+        $this->seedNativeRetentionTask();
+        $table = $this->table('scheduled_tasks');
+        $jobs = $this->table('jobs');
+        $a = $this->nativeRetentionTask($this->pdo);
+        $b = $this->nativeRetentionTask($this->connect());
         $snapshot = $this->pdo->query("SELECT * FROM $table")->fetch(PDO::FETCH_ASSOC);
         $claim = $a->claimRetentionExecution($snapshot, 100);
         $this->assertSame(86500, $claim);
@@ -129,39 +140,27 @@ class LogRetentionDatabaseTest extends TestCase
      */
     public function testInterruptedRetentionDispatchRecovery(): void
     {
-        class_alias(RetentionModelTestApp::class, 'App');
-        class_alias(RetentionModelTestBase::class, 'AppModel');
-        require_once __DIR__ . '/../Model/Task.php';
-        require_once __DIR__ . '/../Model/Job.php';
-        $this->createTable('scheduled_tasks', 'id INT PRIMARY KEY, type VARCHAR(100), action VARCHAR(40), user_id INT, enabled BOOLEAN, timer INT, next_execution_time INT, last_job_id INT NULL, message VARCHAR(255), last_run_at INT NULL');
-        $this->createTable('jobs', 'id INT PRIMARY KEY, status INT NOT NULL');
+        $this->seedNativeRetentionTask();
         $table = $this->table('scheduled_tasks');
         $jobs = $this->table('jobs');
-        $this->pdo->exec("INSERT INTO $table VALUES (1, 'Admin', 'enforceLogRetention', 0, TRUE, 86400, 100, NULL, '', NULL)");
-        $make = function () {
-            $task = new Task();
-            $task->table = 'scheduled_tasks';
-            $task->retentionDatasource = new RetentionDatabaseTestModel('Task', 'scheduled_tasks', $this->connect(), $this->prefix);
-            return $task;
-        };
         $snapshot = function () use ($table) {
             return $this->pdo->query("SELECT * FROM $table")->fetch(PDO::FETCH_ASSOC);
         };
-        $worker = $make();
+        $worker = $this->nativeRetentionTask($this->connect());
         $firstClaim = $worker->claimRetentionExecution($snapshot(), 100);
         $this->assertSame(86500, $firstClaim);
         // Simulate interruption after claim but before creating a job.
         unset($worker);
-        $worker = $make();
+        $worker = $this->nativeRetentionTask($this->connect());
         $this->assertNull($worker->claimRetentionExecution($snapshot(), 86499));
         $secondClaim = $worker->claimRetentionExecution($snapshot(), 86500);
         $this->assertSame(172900, $secondClaim);
-        $this->pdo->exec("INSERT INTO $jobs VALUES (7, 0)");
+        $this->pdo->exec("INSERT INTO $jobs (id, status, job_input) VALUES (7, 0, 'enforceLogRetention')");
         $this->assertFalse($worker->attachRetentionJob(1, $firstClaim, 7));
         $this->assertTrue($worker->attachRetentionJob(1, $secondClaim, 7));
         // Simulate interruption after association, with unknown enqueue outcome.
         unset($worker);
-        $worker = $make();
+        $worker = $this->nativeRetentionTask($this->connect());
         $this->assertNull($worker->claimRetentionExecution($snapshot(), 172900));
         $this->assertNull($worker->claimRetentionExecution($snapshot(), 259300));
         $this->pdo->exec("UPDATE $jobs SET status = " . Job::STATUS_RUNNING . " WHERE id = 7");
