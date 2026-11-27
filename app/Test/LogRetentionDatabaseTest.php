@@ -135,6 +135,21 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testNonTransactionalLogTableIsRejectedBeforeDeletion(): void
+    {
+        $table = $this->table('access_logs');
+        $this->pdo->exec("ALTER TABLE $table ENGINE=MyISAM");
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2000-01-01')");
+        $db = $this->adapter('AccessLog', 'access_logs');
+        try {
+            $db->acquireLock();
+            $this->fail('Expected nontransactional table to be rejected.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('InnoDB', $e->getMessage());
+            $this->assertSame([1], $this->ids('access_logs'));
+        }
+    }
+
     public function testNativeInternalStateUsesAtomicUpsertWithoutCallbacks(): void
     {
         $model = new RetentionDatabaseTestModel('AccessLog', 'access_logs', $this->pdo, $this->prefix);
@@ -568,9 +583,10 @@ class RetentionDatabaseTestModel
             public function flavour() { return self::FLAVOUR_MYSQL; }
         };
     }
-    public function fullTableName($model): string
+    public function fullTableName($model, $quote = true, $schema = true): string
     {
-        return chr(96) . $this->prefix . (is_object($model) ? $model->table : $model) . chr(96);
+        $name = $this->prefix . (is_object($model) ? $model->table : $model);
+        return $quote ? $this->name($name) : $name;
     }
 }
 

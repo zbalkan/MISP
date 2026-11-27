@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/LogRetentionSweep.php';
+require_once __DIR__ . '/LogRetentionPolicy.php';
 require_once __DIR__ . '/LogRetentionCleanupException.php';
 require_once __DIR__ . '/LogRetentionTopology.php';
 
@@ -17,6 +18,8 @@ final class LogRetentionDatabase
     private $driver;
     private $pgLockKeys;
     private $pgLockOids;
+    private $mysqlDatabase;
+    private $mysqlTables;
     private $storageTimezone;
     private $table;
     private $lockName;
@@ -47,7 +50,7 @@ final class LogRetentionDatabase
         }
         $this->dialect = $model->getSqlDialect();
         App::uses('AdminSetting', 'Model');
-        if ($this->dialect->flavour() !== $this->driver) {
+        if ($this->dialect->getDataSource() !== $db || $this->dialect->flavour() !== $this->driver) {
             throw new RuntimeException('Retention datasource dialect does not match its connection.');
         }
         if ((int)$this->connection->getAttribute(PDO::ATTR_ERRMODE) !== PDO::ERRMODE_EXCEPTION) {
@@ -63,7 +66,23 @@ final class LogRetentionDatabase
         if (!is_string($database) || $database === '') {
             throw new RuntimeException('Retention database name unavailable.');
         }
-        $this->lockName = 'misp:retention:' . substr(hash('sha256', $database . ':' . $this->table), 0, 48);
+        // Checkpoint keys are scoped to the datasource's standard table
+        // prefix/schema. Do not allow a model-specific override to share them.
+        if ($db->fullTableName($model, false, true) !== $db->fullTableName($model->table, false, true)) {
+            throw new RuntimeException('Retention requires the datasource log table prefix and schema.');
+        }
+        if ($this->driver === 'mysql') {
+            $this->mysqlDatabase = $database;
+            $this->mysqlTables = [$db->fullTableName($model, false, false), $db->fullTableName('admin_settings', false, false)];
+            foreach ([$model, 'admin_settings'] as $table) {
+                $name = $db->fullTableName($table, false, false);
+                $qualified = $db->fullTableName($table, false, true);
+                if ($qualified !== $name && $qualified !== $database . '.' . $name) {
+                    throw new RuntimeException('Retention requires log and checkpoint tables in the current database.');
+                }
+            }
+        }
+        $this->lockName = 'misp:retention:' . substr(hash('sha256', $database . ':' . $db->fullTableName($model, false, false)), 0, 48);
         if ($this->driver === 'pgsql') {
             // Advisory locks are database-local. Use the relation OID to
             // identify the same table even through different search paths.
@@ -108,6 +127,17 @@ final class LogRetentionDatabase
             LogRetentionTopology::assertSupported($statement->fetchAll(PDO::FETCH_KEY_PAIR));
         } finally {
             $statement->closeCursor();
+        }
+        foreach ($this->mysqlTables as $table) {
+            $statement = $this->execute('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [$this->mysqlDatabase, $table]);
+            try {
+                $engines = $statement->fetchAll(PDO::FETCH_COLUMN);
+            } finally {
+                $statement->closeCursor();
+            }
+            if (count($engines) !== 1 || strcasecmp($engines[0] ?? '', 'InnoDB') !== 0) {
+                throw new RuntimeException('Retention requires transactional InnoDB log and checkpoint tables.');
+            }
         }
         // MySQL named locks are recursive within one session. Do not allow
         // a second adapter sharing the PDO connection to acquire the same lock.
@@ -170,6 +200,9 @@ final class LogRetentionDatabase
 
     public function readPolicySetting(string $setting): ?string
     {
+        if (!LogRetentionPolicy::isSetting($setting)) {
+            throw new InvalidArgumentException('Unknown retention setting.');
+        }
         $value = $this->scalar("SELECT value FROM {$this->settingsTable} WHERE setting = ?", [$setting]);
         if (is_resource($value)) {
             $bytes = stream_get_contents($value);

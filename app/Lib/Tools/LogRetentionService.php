@@ -9,12 +9,15 @@ require_once __DIR__ . '/LogRetentionPolicyReader.php';
 /** Shared entry point for the supported MISP log models. */
 final class LogRetentionService
 {
+    private const TABLES = ['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'];
+
     /** Run configured policies once, using caller-specific reporting. */
     public static function runAllConfigured(callable $runTable, callable $report, callable $reportFailure): bool
     {
         $success = true;
-        foreach (['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'] as $alias => $category) {
-            $progress = (int) floor(array_search($alias, ['AuditLog', 'AccessLog', 'Log'], true) * 100 / 3);
+        $index = 0;
+        foreach (self::TABLES as $alias => $category) {
+            $progress = (int) floor($index * 100 / count(self::TABLES));
             $report($category, null, $progress);
             try {
                 $result = $runTable($alias);
@@ -23,7 +26,7 @@ final class LogRetentionService
                 $reportFailure($category, $e, $progress);
                 return false;
             }
-            $report($category, $result, min(99, $progress + 34));
+            $report($category, $result, min(99, (int) floor(++$index * 100 / count(self::TABLES))));
             if (!in_array($result['status'], ['complete', 'disabled'], true)) {
                 $success = false;
             }

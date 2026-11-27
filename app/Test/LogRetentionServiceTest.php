@@ -7,7 +7,7 @@ use PHPUnit\Framework\TestCase;
 require_once __DIR__ . '/../Lib/Tools/LogRetentionService.php';
 require_once __DIR__ . '/../Lib/Tools/BackgroundJobs/BackgroundJob.php';
 
-class LogRetentionScheduledJobTest extends TestCase
+class LogRetentionServiceTest extends TestCase
 {
     public function testReportsIncompleteSweepAndContinuesIndependentTables(): void
     {
@@ -23,7 +23,7 @@ class LogRetentionScheduledJobTest extends TestCase
         $this->assertFalse($result);
         $this->assertSame(['AuditLog', 'AccessLog', 'Log'], $calls);
         $this->assertSame('partial', $reports[1][1]['status']);
-        $this->assertSame(99, $reports[5][2]);
+        $this->assertSame([0, 33, 33, 66, 66, 99], array_column($reports, 2));
     }
 
     public function testFailureStopsBeforeNextTable(): void

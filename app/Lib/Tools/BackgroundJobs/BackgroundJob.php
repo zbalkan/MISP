@@ -111,8 +111,10 @@ class BackgroundJob implements JsonSerializable
     {
         $environment = ['BACKGROUND_JOB_ID' => $this->id];
         if ($this->command() === 'admin' && ($this->args()[0] ?? null) === 'enforceLogRetention') {
-            foreach (['audit_log_retention_days', 'access_log_retention_days', 'log_retention_days', 'log_retention_timezone'] as $setting) {
-                $name = 'MISP_SETTING_MISP__' . $setting;
+            require_once dirname(__DIR__) . '/LogRetentionPolicy.php';
+            require_once dirname(__DIR__) . '/ConfigSettingReader.php';
+            foreach (array_merge(LogRetentionPolicy::DAY_SETTINGS, [LogRetentionPolicy::TIMEZONE_SETTING]) as $setting) {
+                $name = ConfigSettingReader::environmentVariableName($setting);
                 $value = getenv($name);
                 if ($value !== false) {
                     $environment[$name] = $value;
