@@ -72,11 +72,44 @@ cake Log accessLogRetention 30 --dry-run
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent')")" = 2
 
 # Verify the actual Cake process exit status, not only shell method returns.
-cake Log retention --dry-run
-if MISP_SETTING_MISP__audit_log_retention_days=invalid cake Log retention --dry-run; then
+output=$(cake Log retention --dry-run 2>&1)
+for category in audit_logs access_logs logs; do
+    grep -F "$category: mode=dry-run status=disabled" <<< "$output"
+done
+if output=$(MISP_SETTING_MISP__audit_log_retention_days=invalid cake Log retention --dry-run 2>&1); then
     echo 'Blocked configured retention unexpectedly returned success.' >&2
     exit 1
 fi
+grep -F 'audit_logs: mode=dry-run status=blocked' <<< "$output"
+grep -F 'access_logs: mode=dry-run status=disabled' <<< "$output"
+grep -F 'logs: mode=dry-run status=disabled' <<< "$output"
+
+# Environment-only activation avoids waking the native scheduler. Hold the
+# production advisory lock in a separate session for the CLI contention test.
+lock_name=$(query "SELECT CONCAT('misp:retention:', LEFT(SHA2(CONCAT(DATABASE(), ':access_logs'), 256), 48))")
+"${db[@]}" -e "SELECT GET_LOCK('$lock_name', 0); SELECT SLEEP(60)" >/dev/null &
+lock_client=$!
+deadline=$((SECONDS + 10))
+while [[ "$(query "SELECT IS_USED_LOCK('$lock_name') IS NOT NULL")" != 1 ]]; do
+    if (( SECONDS >= deadline )); then
+        kill "$lock_client" 2>/dev/null || true
+        echo 'Could not establish advisory lock contention.' >&2
+        exit 1
+    fi
+    sleep 1
+done
+busy_exit=0
+output=$(MISP_SETTING_MISP__access_log_retention_days=30 cake Log retention --dry-run 2>&1) || busy_exit=$?
+# Kill the server-side connection, not just the client sleeping in SQL.
+lock_owner=$(query "SELECT IS_USED_LOCK('$lock_name')")
+if [[ "$lock_owner" =~ ^[0-9]+$ ]]; then
+    query "KILL CONNECTION $lock_owner"
+fi
+wait "$lock_client" || true
+test "$busy_exit" != 0
+grep -F 'access_logs: mode=dry-run status=busy' <<< "$output"
+output=$(MISP_SETTING_MISP__access_log_retention_days=30 cake Log retention --dry-run 2>&1)
+grep -F 'access_logs: mode=dry-run status=complete' <<< "$output"
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent')")" = 2
 
 # The running scheduler must observe the fresh configuration, provision the
