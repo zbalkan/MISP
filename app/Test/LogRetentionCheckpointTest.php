@@ -30,6 +30,17 @@ class LogRetentionCheckpointTest extends TestCase
         $this->assertNull(LogRetentionCheckpoint::resume($raw, 30, $current->setTimezone(new DateTimeZone('Europe/Tallinn')), 100));
     }
 
+    public function testMalformedCutoffPayloadTypesRestartWithoutThrowing(): void
+    {
+        $current = new DateTimeImmutable('2026-04-01', new DateTimeZone('UTC'));
+        $valid = json_decode(LogRetentionCheckpoint::encode(30, $current->modify('-1 day'), 10, 100), true);
+        foreach ([[], ['unexpected'], ['date' => '2026-03-31'], 123, false] as $invalid) {
+            $state = $valid;
+            $state['cutoff'] = $invalid;
+            $this->assertNull(LogRetentionCheckpoint::resume(json_encode($state, JSON_THROW_ON_ERROR), 30, $current, 100));
+        }
+    }
+
     public function testInvalidOrObsoleteStateRestarts(): void
     {
         $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
