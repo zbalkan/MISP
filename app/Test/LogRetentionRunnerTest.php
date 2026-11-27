@@ -50,6 +50,7 @@ class RetentionRunnerTestDatabase
     public function acquireLock(): bool { ++$this->acquisitions; return $this->locked = true; }
     public function ownsLock(): bool { return $this->locked; }
     public function releaseLock(): void { $this->locked = false; }
+    public function storageTimezone(): DateTimeZone { return new DateTimeZone('UTC'); }
     public function highWaterMark(): int { return 20000; }
     public function loadCheckpoint(): ?string { return $this->checkpoint; }
     public function saveCheckpoint(string $value): void { $this->checkpoint = $value; }

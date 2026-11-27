@@ -26,14 +26,15 @@ final class LogRetentionRunner
         }
         try {
             $started = hrtime(true);
-            $cutoff = LogRetentionPolicy::cutoff($days, new DateTimeImmutable());
+            $timezone = $database->storageTimezone();
+            $cutoff = LogRetentionPolicy::cutoff($days, new DateTimeImmutable('now', $timezone));
             $high = $database->highWaterMark();
             $state = $dryRun ? null : LogRetentionCheckpoint::resume($database->loadCheckpoint(), $days, $cutoff, $high);
             $cursor = $state['cursor'] ?? 0;
             $high = $state['highWaterMark'] ?? $high;
             $cutoff = $state['cutoff'] ?? $cutoff;
             $reason = null;
-            $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $started, $runtimeSeconds, &$reason) {
+            $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $timezone, $started, $runtimeSeconds, &$reason) {
                 if (!$database->ownsLock()) {
                     throw new RuntimeException('Retention lock lost.');
                 }
@@ -41,7 +42,7 @@ final class LogRetentionRunner
                     $reason = 'policy_changed';
                     return false;
                 }
-                if (LogRetentionPolicy::cutoff($days, new DateTimeImmutable()) < $cutoff) {
+                if (LogRetentionPolicy::cutoff($days, new DateTimeImmutable('now', $timezone)) < $cutoff) {
                     $reason = 'clock_changed';
                     return false;
                 }

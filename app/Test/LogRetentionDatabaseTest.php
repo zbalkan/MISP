@@ -56,9 +56,9 @@ class LogRetentionDatabaseTest extends TestCase
         $this->tables[] = $table;
     }
 
-    private function adapter(string $alias, string $table, PDO $pdo = null): LogRetentionDatabase
+    private function adapter(string $alias, string $table, ?PDO $pdo = null, ?DateTimeZone $timezone = null): LogRetentionDatabase
     {
-        return new LogRetentionDatabase(new RetentionDatabaseTestModel($alias, $table, $pdo ?? $this->pdo, $this->prefix));
+        return new LogRetentionDatabase(new RetentionDatabaseTestModel($alias, $table, $pdo ?? $this->pdo, $this->prefix), $timezone ?? new DateTimeZone('UTC'));
     }
 
     private function seed(string $table): void
@@ -76,7 +76,7 @@ class LogRetentionDatabaseTest extends TestCase
 
     public function testBoundedDeletionAndDryRunAcrossAllTables(): void
     {
-        $cutoff = new DateTimeImmutable('2026-01-01 00:00:00');
+        $cutoff = new DateTimeImmutable('2026-01-01 00:00:00', new DateTimeZone('UTC'));
         foreach (['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'] as $alias => $table) {
             $this->seed($table);
             $db = $this->adapter($alias, $table);
@@ -161,7 +161,7 @@ class LogRetentionDatabaseTest extends TestCase
         try {
             $db->saveCheckpoint('before');
             try {
-                $db->processBatch(1, 10000, new DateTimeImmutable('2026-01-01'), false);
+                $db->processBatch(1, 10000, new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC')), false);
                 $this->fail('Expected database failure.');
             } catch (PDOException $e) {
                 $this->assertSame('45000', $e->getCode());
@@ -174,12 +174,72 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testAccessLogCutoffUsesUtcRegardlessOfInputOffset(): void
+    {
+        $this->pdo->exec("INSERT INTO " . $this->table('access_logs') . " (id, created) VALUES
+            (1, '2026-01-01 09:59:59.9999'), (2, '2026-01-01 10:00:00.0000'),
+            (3, '2026-01-01 10:00:00.0001'), (4, '2026-01-01 11:00:00')");
+        $db = $this->adapter('AccessLog', 'access_logs', null, new DateTimeZone('Europe/Tallinn'));
+        $this->assertTrue($db->acquireLock());
+        try {
+            foreach (['2026-01-01 12:00:00+02:00', '2026-01-01 05:00:00-05:00'] as $time) {
+                $this->assertSame(1, $db->processBatch(1, 4, new DateTimeImmutable($time), true));
+            }
+            $this->assertSame(1, $db->processBatch(1, 4, new DateTimeImmutable('2026-01-01 12:00:00+02:00'), false));
+            $this->assertSame([2, 3, 4], $this->ids('access_logs'));
+        } finally {
+            $db->releaseLock();
+        }
+    }
+
+    public function testLocalLogCutoffUsesExplicitWriterTimezone(): void
+    {
+        foreach (['AuditLog' => 'audit_logs', 'Log' => 'logs'] as $alias => $table) {
+            $this->pdo->exec("INSERT INTO " . $this->table($table) . " (id, created) VALUES
+                (1, '2026-01-01 11:59:59'), (2, '2026-01-01 12:00:00'), (3, '2026-01-01 12:00:01')");
+            $db = $this->adapter($alias, $table, null, new DateTimeZone('Europe/Tallinn'));
+            $this->assertTrue($db->acquireLock());
+            try {
+                $this->assertSame(1, $db->processBatch(1, 3, new DateTimeImmutable('2026-01-01 10:00:00+00:00'), false));
+                $this->assertSame([2, 3], $this->ids($table));
+            } finally {
+                $db->releaseLock();
+            }
+        }
+    }
+
+    public function testAmbiguousLocalHourIsRetainedUntilBothOccurrencesExpire(): void
+    {
+        $this->pdo->exec("INSERT INTO " . $this->table('logs') . " (id, created) VALUES
+            (1, '2026-10-25 02:59:59'), (2, '2026-10-25 03:00:00'),
+            (3, '2026-10-25 03:30:00'), (4, '2026-10-25 04:00:00')");
+        $db = $this->adapter('Log', 'logs', null, new DateTimeZone('Europe/Tallinn'));
+        $this->assertTrue($db->acquireLock());
+        try {
+            foreach (['2026-10-25 00:30:00+00:00', '2026-10-25 01:30:00+00:00'] as $time) {
+                $this->assertSame(1, $db->processBatch(1, 4, new DateTimeImmutable($time), true));
+            }
+            $this->assertSame(1, $db->processBatch(1, 4, new DateTimeImmutable('2026-10-25 01:30:00+00:00'), false));
+            $this->assertSame([2, 3, 4], $this->ids('logs'));
+            $this->assertSame(2, $db->processBatch(1, 4, new DateTimeImmutable('2026-10-25 02:00:00+00:00'), false));
+            $this->assertSame([4], $this->ids('logs'));
+        } finally {
+            $db->releaseLock();
+        }
+    }
+
+    public function testLocalTableRequiresExplicitTimezone(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new LogRetentionDatabase(new RetentionDatabaseTestModel('Log', 'logs', $this->pdo, $this->prefix));
+    }
+
     public function testDeletionWithoutLockIsRejected(): void
     {
         $this->seed('logs');
         $db = $this->adapter('Log', 'logs');
         $this->expectException(RuntimeException::class);
-        $db->processBatch(1, 10000, new DateTimeImmutable('2026-01-01'), false);
+        $db->processBatch(1, 10000, new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC')), false);
     }
 }
 

@@ -9,6 +9,7 @@ declare(strict_types=1);
 final class LogRetentionDatabase
 {
     private $connection;
+    private $storageTimezone;
     private $table;
     private $lockName;
     private $checkpointTable;
@@ -16,12 +17,20 @@ final class LogRetentionDatabase
     private $checkpointKey;
     private $locked = false;
 
-    public function __construct($model)
+    /**
+     * Local-time log tables require the established writer timezone, not the
+     * timezone of the CLI process. AccessLog timestamps are always UTC.
+     */
+    public function __construct($model, ?DateTimeZone $logTimezone = null)
     {
         $tables = ['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'];
         if (!isset($tables[$model->alias]) || $model->table !== $tables[$model->alias]) {
             throw new InvalidArgumentException('Unsupported retention model.');
         }
+        if ($model->alias !== 'AccessLog' && $logTimezone === null) {
+            throw new InvalidArgumentException('The log writer timezone must be explicitly established.');
+        }
+        $this->storageTimezone = $model->alias === 'AccessLog' ? new DateTimeZone('UTC') : $logTimezone;
         $db = $model->getDataSource();
         $this->connection = $db->getConnection();
         $this->table = $db->fullTableName($model);
@@ -124,13 +133,42 @@ final class LogRetentionDatabase
         return $id === false ? null : (int)$id;
     }
 
+    public function storageTimezone(): DateTimeZone
+    {
+        return $this->storageTimezone;
+    }
+
+    /**
+     * DATETIME has no offset. During a backward clock transition, retain the
+     * entire repeated wall-clock interval until both occurrences have expired.
+     */
+    private function storageCutoff(DateTimeImmutable $cutoff): string
+    {
+        $local = $cutoff->setTimezone($this->storageTimezone);
+        $timestamp = $local->getTimestamp();
+        $transitions = $this->storageTimezone->getTransitions($timestamp - 172800, $timestamp + 172800);
+        if ($transitions !== false) {
+            $previousOffset = $transitions[0]['offset'];
+            foreach (array_slice($transitions, 1) as $transition) {
+                $offset = $transition['offset'];
+                $repeatedSeconds = $previousOffset - $offset;
+                $at = $transition['ts'];
+                if ($repeatedSeconds > 0 && $timestamp >= $at - $repeatedSeconds && $timestamp < $at + $repeatedSeconds) {
+                    return gmdate('Y-m-d H:i:s', $at + $offset) . '.000000';
+                }
+                $previousOffset = $offset;
+            }
+        }
+        return $local->format('Y-m-d H:i:s.u');
+    }
+
     public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun): int
     {
         if ($first < 1 || $last < $first || $last - $first >= 10000) {
             throw new InvalidArgumentException('Invalid retention batch bounds.');
         }
         $where = " WHERE id >= ? AND id <= ? AND created < ?";
-        $params = [$first, $last, $cutoff->format('Y-m-d H:i:s.u')];
+        $params = [$first, $last, $this->storageCutoff($cutoff)];
         if ($dryRun) {
             return (int)$this->scalar("SELECT COUNT(*) FROM {$this->table}" . $where, $params);
         }
