@@ -18,7 +18,7 @@ final class LogRetentionTopology
         if (!in_array($wsrep, ['OFF', '0'], true) || !in_array($provider, ['none', ''], true)) {
             throw new RuntimeException('Log retention does not support Galera/wsrep configurations.');
         }
-        if (array_key_exists('group_replication_group_name', $variables)) {
+        if (trim((string)($variables['group_replication_group_name'] ?? '')) !== '') {
             throw new RuntimeException('Log retention does not support MySQL Group Replication configurations.');
         }
     }
