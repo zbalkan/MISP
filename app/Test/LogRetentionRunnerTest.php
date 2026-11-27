@@ -21,6 +21,36 @@ class LogRetentionRunnerTest extends TestCase
         $this->assertFalse($database->locked);
     }
 
+    public function testBlockedPolicyPreservesCommittedProgress(): void
+    {
+        $database = new RetentionRunnerTestDatabase();
+        $result = (new LogRetentionRunner())->run($database, static function () use ($database) {
+            if ($database->batches > 0) {
+                throw new LogRetentionConfigurationException('invalid policy');
+            }
+            return 30;
+        }, false, 1800, 0);
+        $this->assertSame('blocked', $result['status']);
+        $this->assertSame('invalid policy', $result['reason']);
+        $this->assertSame(1, $result['affected']);
+        $this->assertSame(10000, $result['cursor']);
+        $this->assertFalse($database->locked);
+        $this->assertNotNull($database->checkpoint);
+    }
+
+    public function testBlockedPolicyDoesNotMaskCleanupFailure(): void
+    {
+        $database = new RetentionRunnerTestDatabase();
+        $database->releaseFailure = new RuntimeException('release failed');
+        $this->expectExceptionMessage('release failed');
+        (new LogRetentionRunner())->run($database, static function () use ($database) {
+            if ($database->batches > 0) {
+                throw new LogRetentionConfigurationException('invalid policy');
+            }
+            return 30;
+        }, false, 1800, 0);
+    }
+
     public function testInjectedClockStopsSweepOnBackwardTimeChange(): void
     {
         $database = new RetentionRunnerTestDatabase();

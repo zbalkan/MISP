@@ -59,6 +59,26 @@ class LogRetentionPolicyReaderTest extends TestCase
         }
     }
 
+    public function testInvalidOverrideDoesNotSuppressOtherEnabledPolicy(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'retention-');
+        $name = 'MISP_SETTING_MISP__audit_log_retention_days';
+        $previous = getenv($name);
+        try {
+            file_put_contents($path, '<?php $config = ["MISP" => ["access_log_retention_days" => 30]];');
+            putenv($name . '=invalid');
+            $blocked = [];
+            $this->assertTrue(LogRetentionPolicyReader::anyEnabled($path, static function () { return null; }, static function ($setting, $error) use (&$blocked) {
+                $blocked[$setting] = $error;
+            }));
+            $this->assertSame(['MISP.audit_log_retention_days'], array_keys($blocked));
+            $this->assertInstanceOf(LogRetentionConfigurationException::class, $blocked['MISP.audit_log_retention_days']);
+        } finally {
+            putenv($previous === false ? $name : $name . '=' . $previous);
+            unlink($path);
+        }
+    }
+
     public function testRefreshAndPrecedence(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'retention-');

@@ -59,25 +59,39 @@ final class LogRetentionService
         $settings = ['AuditLog' => 'audit_log_retention_days', 'AccessLog' => 'access_log_retention_days', 'Log' => 'log_retention_days'];
         $database = new LogRetentionDatabase($model, $logTimezone);
         $setting = $settings[$model->alias];
-        $configuredTimezone = null;
-        if ($model->alias !== 'AccessLog' && LogRetentionPolicyReader::read($setting, $configFile, [$database, 'readPolicySetting']) > 0) {
-            $configuredTimezone = LogRetentionPolicyReader::readTimezone($configFile, [$database, 'readPolicySetting']);
-            if ($configuredTimezone !== LogRetentionPolicy::UNCONFIGURED_TIMEZONE) {
-                if ($logTimezone !== null && $logTimezone->getName() !== $configuredTimezone) {
-                    throw new InvalidArgumentException('CLI writer timezone conflicts with configured retention timezone.');
-                }
-                $logTimezone = new DateTimeZone($configuredTimezone);
-            }
-            $database = new LogRetentionDatabase($model, $logTimezone);
-        }
-        $result = (new LogRetentionRunner())->run($database, static function () use ($database, $setting, $configFile, $model, $configuredTimezone) {
+        $started = hrtime(true);
+        $days = null;
+        try {
             $days = LogRetentionPolicyReader::read($setting, $configFile, [$database, 'readPolicySetting']);
-            if ($days > 0 && $model->alias !== 'AccessLog' &&
-                LogRetentionPolicyReader::readTimezone($configFile, [$database, 'readPolicySetting']) !== $configuredTimezone) {
-                throw new RuntimeException('Retention writer timezone changed; restart the sweep with the current configuration.');
+            $configuredTimezone = null;
+            if ($model->alias !== 'AccessLog' && $days > 0) {
+                $configuredTimezone = LogRetentionPolicyReader::readTimezone($configFile, [$database, 'readPolicySetting']);
+                if ($configuredTimezone !== LogRetentionPolicy::UNCONFIGURED_TIMEZONE) {
+                    if ($logTimezone !== null && $logTimezone->getName() !== $configuredTimezone) {
+                        throw new LogRetentionConfigurationException('CLI writer timezone conflicts with configured retention timezone.');
+                    }
+                    $logTimezone = new DateTimeZone($configuredTimezone);
+                } elseif ($logTimezone === null) {
+                    throw new LogRetentionConfigurationException('Configure the log writer timezone before enabling local log retention.');
+                }
+                $database = new LogRetentionDatabase($model, $logTimezone);
             }
-            return $days;
-        }, $dryRun);
+            $result = (new LogRetentionRunner())->run($database, static function () use ($database, $setting, $configFile, $model, $configuredTimezone) {
+                $days = LogRetentionPolicyReader::read($setting, $configFile, [$database, 'readPolicySetting']);
+                if ($days > 0 && $model->alias !== 'AccessLog' &&
+                    LogRetentionPolicyReader::readTimezone($configFile, [$database, 'readPolicySetting']) !== $configuredTimezone) {
+                    throw new LogRetentionConfigurationException('Retention writer timezone changed; restart the sweep with the current configuration.');
+                }
+                return $days;
+            }, $dryRun);
+        } catch (LogRetentionConfigurationException $e) {
+            // Only typed configuration errors before mutation reach this catch.
+            // The runner handles later policy errors at a batch boundary and
+            // preserves counts; any cleanup failure remains fatal.
+            return ['status' => 'blocked', 'reason' => $e->getMessage(), 'complete' => false,
+                'affected' => 0, 'batches' => 0, 'days' => $days, 'cutoff' => null,
+                'durationSeconds' => (hrtime(true) - $started) / 1e9, 'dryRun' => $dryRun];
+        }
         return self::formatCutoff($database, $result);
     }
 

@@ -516,6 +516,40 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testInvalidLocalPoliciesDoNotBlockAccessLogRetention(): void
+    {
+        require_once __DIR__ . '/../Lib/Tools/LogRetentionService.php';
+        $tables = ['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'];
+        foreach ($tables as $table) {
+            $this->pdo->exec("INSERT INTO " . $this->table($table) . " (id, created) VALUES (1, '2000-01-01')");
+        }
+        $config = tempnam(sys_get_temp_dir(), 'retention-config-');
+        try {
+            file_put_contents($config, '<?php $config = ["MISP" => ["audit_log_retention_days" => 30, "access_log_retention_days" => 30, "log_retention_days" => "invalid"]];');
+            $results = [];
+            $success = LogRetentionService::runAllConfigured(
+                function ($alias) use ($tables, $config) {
+                    return LogRetentionService::runConfigured(new RetentionDatabaseTestModel($alias, $tables[$alias], $this->pdo, $this->prefix), $config);
+                },
+                static function ($category, $result, $progress) use (&$results) {
+                    if ($result !== null) {
+                        $results[$category] = $result;
+                    }
+                },
+                static function ($category, $error, $progress) { throw $error; }
+            );
+            $this->assertFalse($success);
+            $this->assertSame(['blocked', 'complete', 'blocked'], array_column($results, 'status'));
+            $this->assertSame([1], $this->ids('audit_logs'));
+            $this->assertSame([], $this->ids('access_logs'));
+            $this->assertSame([1], $this->ids('logs'));
+            $this->assertSame(0, $results['audit_logs']['affected']);
+            $this->assertSame(1, $results['access_logs']['affected']);
+        } finally {
+            unlink($config);
+        }
+    }
+
     public function testConfiguredSweepStopsAfterWriterTimezoneChanges(): void
     {
         require_once __DIR__ . '/../Lib/Tools/LogRetentionService.php';
@@ -531,12 +565,11 @@ class LogRetentionDatabaseTest extends TestCase
         try {
             file_put_contents($config, '<?php $config = ["MISP" => ["system_setting_db" => true]];');
             $model = new RetentionDatabaseTestModel('AuditLog', 'audit_logs', $this->pdo, $this->prefix);
-            try {
-                LogRetentionService::runConfigured($model, $config);
-                $this->fail('Expected timezone change to stop the sweep.');
-            } catch (RuntimeException $e) {
-                $this->assertStringContainsString('writer timezone changed', $e->getMessage());
-            }
+            $result = LogRetentionService::runConfigured($model, $config);
+            $this->assertSame('blocked', $result['status']);
+            $this->assertSame(1, $result['affected']);
+            $this->assertSame(1, $result['batches']);
+            $this->assertStringContainsString('writer timezone changed', $result['reason']);
             $this->assertSame([20000], $this->ids('audit_logs'));
             $db = $this->adapter('AuditLog', 'audit_logs');
             $this->assertTrue($db->acquireLock());

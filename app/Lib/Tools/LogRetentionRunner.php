@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/LogRetentionPolicy.php';
+require_once __DIR__ . '/LogRetentionConfigurationException.php';
 require_once __DIR__ . '/LogRetentionCheckpoint.php';
 require_once __DIR__ . '/LogRetentionSweep.php';
 require_once __DIR__ . '/LogRetentionCleanupException.php';
@@ -46,11 +47,19 @@ final class LogRetentionRunner
             $high = $state['highWaterMark'] ?? $high;
             $cutoff = $state['cutoff'] ?? $cutoff;
             $reason = null;
-            $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $timezone, $started, $runtimeSeconds, &$reason) {
+            $blocked = false;
+            $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $timezone, $started, $runtimeSeconds, &$reason, &$blocked) {
                 if (!$database->ownsLock()) {
                     throw new RuntimeException('Retention lock lost.');
                 }
-                if (LogRetentionPolicy::parse($readPolicy()) !== $days) {
+                try {
+                    $currentDays = LogRetentionPolicy::parse($readPolicy());
+                } catch (LogRetentionConfigurationException $e) {
+                    $blocked = true;
+                    $reason = $e->getMessage();
+                    return false;
+                }
+                if ($currentDays !== $days) {
                     $reason = 'policy_changed';
                     return false;
                 }
@@ -85,7 +94,7 @@ final class LogRetentionRunner
                 $canContinue,
                 $dryRun
             );
-            $result['status'] = $result['complete'] ? 'complete' : 'partial';
+            $result['status'] = $blocked ? 'blocked' : ($result['complete'] ? 'complete' : 'partial');
             $result['reason'] = $reason;
             $result['days'] = $days;
             $result['cutoff'] = $cutoff;

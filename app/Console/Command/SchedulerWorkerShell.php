@@ -123,13 +123,13 @@ class SchedulerWorkerShell extends AppShell
 
     private function retentionEnabled(LogRetentionDatabase $database): bool
     {
-        $enabled = false;
-        foreach (LogRetentionPolicy::DAY_SETTINGS as $name) {
-            if (LogRetentionPolicyReader::read(substr($name, 5), APP . 'Config' . DS . 'config.php', [$database, 'readPolicySetting']) > 0) {
-                $enabled = true;
+        return LogRetentionPolicyReader::anyEnabled(
+            APP . 'Config' . DS . 'config.php',
+            [$database, 'readPolicySetting'],
+            static function ($name, $error) {
+                CakeLog::error("Log retention policy $name is blocked: " . $error->getMessage());
             }
-        }
-        return $enabled;
+        );
     }
 
     private function provisionRetentionTask(): void
