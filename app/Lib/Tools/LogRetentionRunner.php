@@ -16,7 +16,7 @@ require_once __DIR__ . '/LogRetentionCleanupException.php';
  */
 final class LogRetentionRunner
 {
-    public function run($database, callable $readPolicy, bool $dryRun = false, int $runtimeSeconds = 1800, int $delayMicroseconds = 200000): array
+    public function run($database, callable $readPolicy, bool $dryRun = false, int $runtimeSeconds = 1800, int $delayMicroseconds = 200000, bool $persistCheckpoint = true): array
     {
         if ($runtimeSeconds <= 0 || $delayMicroseconds < 0) {
             throw new InvalidArgumentException('Invalid retention execution limits.');
@@ -34,7 +34,7 @@ final class LogRetentionRunner
             $timezone = $database->storageTimezone();
             $cutoff = LogRetentionPolicy::cutoff($days, new DateTimeImmutable('now', $timezone));
             $high = $database->highWaterMark();
-            $state = $dryRun ? null : LogRetentionCheckpoint::resume($database->loadCheckpoint(), $days, $cutoff, $high);
+            $state = $dryRun || !$persistCheckpoint ? null : LogRetentionCheckpoint::resume($database->loadCheckpoint(), $days, $cutoff, $high);
             $cursor = $state['cursor'] ?? 0;
             $high = $state['highWaterMark'] ?? $high;
             $cutoff = $state['cutoff'] ?? $cutoff;
@@ -70,8 +70,10 @@ final class LogRetentionRunner
                     return $database->nextId($cursor, $high);
                 },
                 [$database, 'processBatch'],
-                function ($cursor) use ($database, $days, $cutoff, $high) {
-                    $database->saveCheckpoint(LogRetentionCheckpoint::encode($days, $cutoff, $cursor, $high));
+                function ($cursor) use ($database, $days, $cutoff, $high, $persistCheckpoint) {
+                    if ($persistCheckpoint) {
+                        $database->saveCheckpoint(LogRetentionCheckpoint::encode($days, $cutoff, $cursor, $high));
+                    }
                 },
                 $canContinue,
                 $dryRun

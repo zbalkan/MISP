@@ -309,6 +309,40 @@ class LogRetentionDatabaseTest extends TestCase
         $db->processBatch(1, 10000, new DateTimeImmutable('2026-01-01'), true);
     }
 
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function testActualLogModelEntryPointsUseSharedRetentionEngine(): void
+    {
+        if (!class_exists('App', false)) {
+            class_alias(RetentionModelTestApp::class, 'App');
+        }
+        if (!class_exists('AppModel', false)) {
+            class_alias(RetentionModelTestBase::class, 'AppModel');
+        }
+        require_once __DIR__ . '/../Lib/Tools/LogRetentionService.php';
+        foreach (['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'] as $alias => $table) {
+            require_once __DIR__ . '/../Model/' . $alias . '.php';
+            $model = (new ReflectionClass($alias))->newInstanceWithoutConstructor();
+            $model->alias = $alias;
+            $model->table = $table;
+            $model->retentionDatasource = new RetentionDatabaseTestModel($alias, $table, $this->pdo, $this->prefix);
+            $this->pdo->exec("INSERT INTO " . $this->table($table) . " (id, created) VALUES
+                (1, '2000-01-01 00:00:00'), (2, '2099-01-01 00:00:00')");
+            $reader = static function ($database) { return 30; };
+            $dry = $model->runLogRetention($reader, true, new DateTimeZone('UTC'), false);
+            $this->assertSame('complete', $dry['status']);
+            $this->assertSame(1, $dry['affected']);
+            $this->assertSame([1, 2], $this->ids($table));
+            $result = $model->runLogRetention($reader, false, new DateTimeZone('UTC'), false);
+            $this->assertSame('complete', $result['status']);
+            $this->assertSame(1, $result['affected']);
+            $this->assertSame([2], $this->ids($table));
+        }
+        $this->assertSame(0, (int)$this->pdo->query("SELECT COUNT(*) FROM " . $this->table('admin_settings'))->fetchColumn());
+    }
+
     public function testDeletionWithoutLockIsRejected(): void
     {
         $this->seed('logs');
@@ -339,5 +373,23 @@ class RetentionDatabaseTestModel
     public function fullTableName($model): string
     {
         return chr(96) . $this->prefix . (is_object($model) ? $model->table : $model) . chr(96);
+    }
+}
+
+/** Isolated CakePHP boundary stubs; the three log model methods are real. */
+class RetentionModelTestApp
+{
+    public static function uses($class, $package) {}
+}
+
+class RetentionModelTestBase
+{
+    public $alias;
+    public $table;
+    public $retentionDatasource;
+
+    public function getDataSource()
+    {
+        return $this->retentionDatasource;
     }
 }
