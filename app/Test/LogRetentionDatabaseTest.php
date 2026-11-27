@@ -413,8 +413,16 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
     public function testManagedRetentionBlockDiagnostics(): void
     {
+        class_alias(RetentionModelTestApp::class, 'App');
+        class_alias(RetentionModelTestBase::class, 'AppModel');
+        require_once __DIR__ . '/../Model/Task.php';
+        require_once __DIR__ . '/../Model/Job.php';
         $task = ['type' => 'Admin', 'action' => Task::RETENTION_ACTION, 'enabled' => true,
             'user_id' => 0, 'timer' => Task::RETENTION_INTERVAL, 'next_execution_time' => 100, 'last_job_id' => 7];
         $this->assertStringContainsString('missing job 7', Task::retentionBlockReason($task, null, 100));
