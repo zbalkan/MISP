@@ -17,9 +17,11 @@ final class LogRetentionService
         return (new LogRetentionRunner())->runFixedCutoff(new LogRetentionDatabase($model), $cutoff);
     }
 
-    public static function runConfigured($model, string $setting, string $configFile, bool $dryRun = false, ?DateTimeZone $logTimezone = null): array
+    public static function runConfigured($model, string $configFile, bool $dryRun = false, ?DateTimeZone $logTimezone = null): array
     {
+        $settings = ['AuditLog' => 'audit_log_retention_days', 'AccessLog' => 'access_log_retention_days', 'Log' => 'log_retention_days'];
         $database = new LogRetentionDatabase($model, $logTimezone);
+        $setting = $settings[$model->alias];
         $result = (new LogRetentionRunner())->run($database, static function () use ($database, $setting, $configFile) {
             return LogRetentionPolicyReader::read($setting, $configFile, [$database, 'readPolicySetting']);
         }, $dryRun);

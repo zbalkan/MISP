@@ -1,4 +1,6 @@
 <?php
+App::uses('LogRetentionService', 'Tools');
+App::uses('LogRetentionPolicy', 'Tools');
 
 /**
  * @property Log $Log
@@ -36,13 +38,28 @@ class LogShell extends AppShell
         $parser->addSubcommand('recompress', [
             'help' => __('Recompress compressed data in logs.'),
         ]);
-        $parser->addSubcommand('accessLogRetention', [
-            'help' => __('Delete logs that are older than specified duration.'),
-            'parser' => array(
-                'arguments' => array(
-                    'duration' => ['help' => __('Duration in days'), 'required' => true],
-                ),
-            ),
+        $dryRun = ['boolean' => true, 'help' => __('Count eligible rows without deleting them.')];
+        $timezone = ['help' => __('IANA timezone used to write historical audit and application logs (for example UTC).')];
+        foreach ([
+            'auditLogRetention' => __('Audit logs'),
+            'accessLogRetention' => __('Access logs'),
+            'applicationLogRetention' => __('Application logs'),
+        ] as $command => $category) {
+            $options = ['dry-run' => $dryRun];
+            if ($command !== 'accessLogRetention') {
+                $options['log-timezone'] = $timezone;
+            }
+            $parser->addSubcommand($command, [
+                'help' => __('Apply one-time retention to %s.', $category),
+                'parser' => [
+                    'arguments' => ['duration' => ['help' => __('Duration in days'), 'required' => true]],
+                    'options' => $options,
+                ],
+            ]);
+        }
+        $parser->addSubcommand('retention', [
+            'help' => __('Apply configured retention policies to all log categories.'),
+            'parser' => ['options' => ['dry-run' => $dryRun, 'log-timezone' => $timezone]],
         ]);
         return $parser;
     }
@@ -202,12 +219,119 @@ class LogShell extends AppShell
 
     public function accessLogRetention()
     {
-        list($duration) = $this->args;
+        // Preserve the original numeric validation and relative-date parser.
+        $duration = $this->args[0] ?? null;
         if ($duration <= 0 || !is_numeric($duration)) {
-            $this->error("Invalid duration specified.");
+            return $this->error(__('Invalid duration specified.'));
         }
-        $duration = new DateTime("-$duration days");
-        $deleted = $this->AccessLog->deleteOldLogs($duration);
-        $this->out(__n("Deleted %s entry", "Deleted %s entries", $deleted, $deleted));
+        try {
+            $cutoff = new DateTimeImmutable("-$duration days");
+            $result = LogRetentionService::runExplicit($this->AccessLog, $duration, (bool)$this->param('dry-run'), null, $cutoff);
+            if (!$result['dryRun']) {
+                $deleted = $result['affected'];
+                $this->out(__n("Deleted %s entry", "Deleted %s entries", $deleted, $deleted));
+            }
+            $this->reportRetention('access_logs', $result);
+            return true;
+        } catch (Throwable $e) {
+            return $this->retentionError('access_logs', $e);
+        }
+    }
+
+    public function auditLogRetention()
+    {
+        return $this->explicitRetention($this->AuditLog, 'audit_logs');
+    }
+
+    public function applicationLogRetention()
+    {
+        return $this->explicitRetention($this->Log, 'logs');
+    }
+
+    public function retention()
+    {
+        try {
+            $timezone = $this->retentionTimezone();
+        } catch (Throwable $e) {
+            return $this->retentionError('retention', $e);
+        }
+        $success = true;
+        foreach (['audit_logs' => $this->AuditLog, 'access_logs' => $this->AccessLog, 'logs' => $this->Log] as $category => $model) {
+            try {
+                $result = LogRetentionService::runConfigured($model, $this->retentionConfigFile(), (bool)$this->param('dry-run'), $timezone);
+                $this->reportRetention($category, $result);
+                if (!in_array($result['status'], ['complete', 'disabled'], true)) {
+                    $success = false;
+                }
+            } catch (Throwable $e) {
+                // An uncertain transaction or lock outcome must terminate the
+                // command rather than reusing the datasource for another table.
+                return $this->retentionError($category, $e);
+            }
+        }
+        return $success;
+    }
+
+    protected function retentionConfigFile(): string
+    {
+        return APP . 'Config' . DIRECTORY_SEPARATOR . 'config.php';
+    }
+
+    private function explicitRetention($model, string $category)
+    {
+        try {
+            $days = LogRetentionPolicy::parse($this->args[0] ?? null);
+            $result = LogRetentionService::runExplicit($model, $days, (bool)$this->param('dry-run'), $this->retentionTimezone());
+            $this->reportRetention($category, $result);
+            return true;
+        } catch (Throwable $e) {
+            return $this->retentionError($category, $e);
+        }
+    }
+
+    private function retentionTimezone(): ?DateTimeZone
+    {
+        $timezone = $this->param('log-timezone');
+        if ($timezone === null || $timezone === false || $timezone === '') {
+            return null;
+        }
+        if (!is_string($timezone) || !in_array($timezone, DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC), true)) {
+            throw new InvalidArgumentException(__('Specify a valid IANA log writer timezone.'));
+        }
+        return new DateTimeZone($timezone);
+    }
+
+    private function reportRetention(string $category, array $result): void
+    {
+        $this->out(__('%s: mode=%s status=%s days=%s cutoff=%s batches=%s %s=%s duration=%s seconds',
+            $category, $result['dryRun'] ? 'dry-run' : 'delete', $result['status'], $result['days'],
+            $result['cutoff'] === null ? '-' : $result['cutoff'] . ' (' . $result['timezone'] . ')',
+            $result['batches'], $result['dryRun'] ? 'eligible' : 'deleted', $result['affected'],
+            number_format($result['durationSeconds'], 3, '.', '')
+        ));
+        if ($result['reason'] !== null) {
+            $this->out(__('Reason: %s', $result['reason']));
+        }
+        if (isset($result['cursor'], $result['highWaterMark'])) {
+            $this->out(__('Processed through ID %s of %s.', $result['cursor'], $result['highWaterMark']));
+        }
+    }
+
+    private function retentionError(string $category, Throwable $error)
+    {
+        // Preserve diagnostic information for both operation and cleanup errors.
+        $this->reportRetentionException($error);
+        return $this->error(__('%s retention failed; previously committed batches are not rolled back.', $category));
+    }
+
+    private function reportRetentionException(Throwable $error): void
+    {
+        $this->err(get_class($error) . ': ' . $error->getMessage());
+        if ($error instanceof LogRetentionCleanupException) {
+            $this->reportRetentionException($error->getCleanupFailure());
+        }
+        if ($error->getPrevious() !== null) {
+            $this->reportRetentionException($error->getPrevious());
+        }
     }
 }

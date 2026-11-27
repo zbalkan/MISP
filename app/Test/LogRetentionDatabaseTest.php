@@ -359,6 +359,69 @@ class LogRetentionDatabaseTest extends TestCase
         $this->assertSame(0, (int)$this->pdo->query("SELECT COUNT(*) FROM " . $this->table('admin_settings'))->fetchColumn());
     }
 
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function testLogShellCommandsAgainstMariaDb(): void
+    {
+        class_alias(RetentionModelTestApp::class, 'App');
+        class_alias(RetentionModelTestBase::class, 'AppModel');
+        class_alias(RetentionShellTestBase::class, 'AppShell');
+        if (!function_exists('__')) {
+            function __($message, ...$args) { return $args ? vsprintf($message, $args) : $message; }
+        }
+        if (!function_exists('__n')) {
+            function __n($singular, $plural, $count, ...$args) { return sprintf($count === 1 ? $singular : $plural, $count); }
+        }
+        require_once __DIR__ . '/../Lib/Tools/LogRetentionService.php';
+        require_once __DIR__ . '/../Console/Command/LogShell.php';
+        $shell = new class extends LogShell {
+            protected function retentionConfigFile(): string { return $this->configFile; }
+        };
+        foreach (['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'] as $alias => $table) {
+            require_once __DIR__ . '/../Model/' . $alias . '.php';
+            $model = (new ReflectionClass($alias))->newInstanceWithoutConstructor();
+            $model->alias = $alias;
+            $model->table = $table;
+            $model->retentionDatasource = new RetentionDatabaseTestModel($alias, $table, $this->pdo, $this->prefix);
+            $shell->$alias = $model;
+            $this->pdo->exec("INSERT INTO " . $this->table($table) . " (id, created) VALUES
+                (1, '2000-01-01 00:00:00'), (2, '2099-01-01 00:00:00')");
+        }
+        $shell->args = ['30'];
+        $shell->params = ['dry-run' => true, 'log-timezone' => 'UTC'];
+        foreach (['auditLogRetention', 'accessLogRetention', 'applicationLogRetention'] as $command) {
+            $this->assertTrue($shell->$command());
+        }
+        foreach (['audit_logs', 'access_logs', 'logs'] as $table) {
+            $this->assertSame([1, 2], $this->ids($table));
+        }
+        $this->assertStringContainsString('eligible=1', implode("\n", $shell->output));
+        $shell->params = [];
+        $shell->args = ['0'];
+        $this->assertFalse($shell->accessLogRetention());
+        $this->assertFalse($shell->auditLogRetention());
+        $shell->args = ['30'];
+        $this->assertFalse($shell->auditLogRetention()); // writer timezone missing
+        $this->assertSame([1, 2], $this->ids('audit_logs'));
+        $shell->configFile = tempnam(sys_get_temp_dir(), 'retention-config-');
+        try {
+            file_put_contents($shell->configFile, '<?php $config = ["MISP" => ["access_log_retention_days" => 30]];');
+            $shell->args = [];
+            $shell->params = ['dry-run' => true];
+            $this->assertTrue($shell->retention());
+            $this->assertSame([1, 2], $this->ids('access_logs'));
+            $shell->params = [];
+            $this->assertTrue($shell->retention());
+            $this->assertSame([2], $this->ids('access_logs'));
+            $this->assertSame([1, 2], $this->ids('audit_logs'));
+            $this->assertSame([1, 2], $this->ids('logs'));
+        } finally {
+            unlink($shell->configFile);
+        }
+    }
+
     public function testDeletionWithoutLockIsRejected(): void
     {
         $this->seed('logs');
@@ -408,4 +471,20 @@ class RetentionModelTestBase
     {
         return $this->retentionDatasource;
     }
+}
+
+class RetentionShellTestBase
+{
+    public $AuditLog;
+    public $AccessLog;
+    public $Log;
+    public $args = [];
+    public $params = [];
+    public $output = [];
+    public $configFile;
+
+    public function param($key) { return $this->params[$key] ?? null; }
+    public function out($message) { $this->output[] = $message; }
+    public function err($message) { $this->output[] = $message; }
+    public function error($message) { $this->output[] = $message; return false; }
 }
