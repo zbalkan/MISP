@@ -42,10 +42,14 @@ final class LogRetentionCheckpoint
             if (!$cutoff || $cutoff->format('Y-m-d H:i:s.uP') !== $state['cutoff'] || $cutoff > $currentCutoff) {
                 return null;
             }
+            $localCutoff = $cutoff->setTimezone($currentCutoff->getTimezone());
+            if ($localCutoff->format('Y-m-d H:i:s.uP') !== $state['cutoff']) {
+                return null;
+            }
             return [
                 'cursor' => $state['cursor'],
                 'highWaterMark' => $state['highWaterMark'],
-                'cutoff' => $cutoff->setTimezone($currentCutoff->getTimezone()),
+                'cutoff' => $localCutoff,
             ];
         } catch (JsonException | ValueError $e) {
             return null;

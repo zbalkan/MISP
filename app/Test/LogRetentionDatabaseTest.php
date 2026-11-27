@@ -234,6 +234,36 @@ class LogRetentionDatabaseTest extends TestCase
         new LogRetentionDatabase(new RetentionDatabaseTestModel('Log', 'logs', $this->pdo, $this->prefix));
     }
 
+    public function testRunnerStopsOnPolicyChangeAndResumesRealDatabaseSweep(): void
+    {
+        $this->pdo->exec("INSERT INTO " . $this->table('access_logs') . " (id, created) VALUES
+            (1, '2000-01-01 00:00:00'), (10000, '2000-01-01 00:00:00'),
+            (30000, '2000-01-01 00:00:00'), (30001, '2099-01-01 00:00:00')");
+        $db = $this->adapter('AccessLog', 'access_logs');
+        $runner = new LogRetentionRunner();
+        $dry = $runner->run($db, static function () { return 30; }, true, 1800, 0);
+        $this->assertSame('complete', $dry['status']);
+        $this->assertSame(3, $dry['affected']);
+        $this->assertSame([1, 10000, 30000, 30001], $this->ids('access_logs'));
+        $reads = 0;
+        $partial = $runner->run($db, static function () use (&$reads) {
+            return ++$reads <= 3 ? 30 : 365;
+        }, false, 1800, 0);
+        $this->assertSame('partial', $partial['status']);
+        $this->assertSame('policy_changed', $partial['reason']);
+        $this->assertSame(10000, $partial['cursor']);
+        $this->assertSame(2, $partial['affected']);
+        $this->assertSame([30000, 30001], $this->ids('access_logs'));
+        $this->assertFalse($db->ownsLock());
+        $second = $this->adapter('AccessLog', 'access_logs', $this->connect());
+        $resumed = $runner->run($second, static function () { return 30; }, false, 1800, 0);
+        $this->assertSame('complete', $resumed['status']);
+        $this->assertSame(30001, $resumed['cursor']);
+        $this->assertSame(1, $resumed['affected']);
+        $this->assertSame([30001], $this->ids('access_logs'));
+        $this->assertFalse($second->ownsLock());
+    }
+
     public function testMaximumBatchRangeMatchesSweepLimit(): void
     {
         $this->seed('logs');
