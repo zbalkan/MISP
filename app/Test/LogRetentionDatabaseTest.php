@@ -435,6 +435,42 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testConfiguredSweepStopsAfterWriterTimezoneChanges(): void
+    {
+        require_once __DIR__ . '/../Lib/Tools/LogRetentionService.php';
+        $table = $this->table('audit_logs');
+        $settings = $this->table('system_settings');
+        $trigger = $this->table('change_timezone');
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2000-01-01'), (20000, '2000-01-01')");
+        $this->pdo->exec("INSERT INTO $settings (setting, value) VALUES ('MISP.audit_log_retention_days', '30'), ('MISP.log_retention_timezone', '"
+            . json_encode('UTC') . "')");
+        $this->pdo->exec("CREATE TRIGGER $trigger AFTER DELETE ON $table FOR EACH ROW
+            UPDATE $settings SET value = '" . json_encode('Europe/Tallinn') . "' WHERE setting = 'MISP.log_retention_timezone'");
+        $config = tempnam(sys_get_temp_dir(), 'retention-config-');
+        try {
+            file_put_contents($config, '<?php $config = ["MISP" => ["system_setting_db" => true]];');
+            $model = new RetentionDatabaseTestModel('AuditLog', 'audit_logs', $this->pdo, $this->prefix);
+            try {
+                LogRetentionService::runConfigured($model, $config);
+                $this->fail('Expected timezone change to stop the sweep.');
+            } catch (RuntimeException $e) {
+                $this->assertStringContainsString('writer timezone changed', $e->getMessage());
+            }
+            $this->assertSame([20000], $this->ids('audit_logs'));
+            $db = $this->adapter('AuditLog', 'audit_logs');
+            $this->assertTrue($db->acquireLock());
+            try {
+                $checkpoint = json_decode($db->loadCheckpoint(), true, 16, JSON_THROW_ON_ERROR);
+                $this->assertSame(10000, $checkpoint['cursor']);
+                $this->assertSame('UTC', $checkpoint['timezone']);
+            } finally {
+                $db->releaseLock();
+            }
+        } finally {
+            unlink($config);
+        }
+    }
+
     public function testDeletionWithoutLockIsRejected(): void
     {
         $this->seed('logs');
