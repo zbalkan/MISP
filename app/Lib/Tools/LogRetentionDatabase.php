@@ -13,6 +13,10 @@ require_once __DIR__ . '/LogRetentionTopology.php';
 final class LogRetentionDatabase
 {
     private $connection;
+    private $dialect;
+    private $driver;
+    private $pgLockKeys;
+    private $pgLockOids;
     private $storageTimezone;
     private $table;
     private $lockName;
@@ -39,8 +43,13 @@ final class LogRetentionDatabase
         $this->checkpointTable = $db->fullTableName('admin_settings');
         $this->settingsTable = $db->fullTableName('system_settings');
         $this->checkpointKey = 'log_retention_checkpoint_' . $model->table;
-        if ($this->connection->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
-            throw new RuntimeException('Retention locking is currently supported only on MySQL and MariaDB.');
+        $this->driver = $this->connection->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if (!in_array($this->driver, ['mysql', 'pgsql'], true)) {
+            throw new RuntimeException('Unsupported retention database driver.');
+        }
+        $this->dialect = $model->getSqlDialect();
+        if ($this->dialect->flavour() !== $this->driver) {
+            throw new RuntimeException('Retention datasource dialect does not match its connection.');
         }
         if ((int)$this->connection->getAttribute(PDO::ATTR_ERRMODE) !== PDO::ERRMODE_EXCEPTION) {
             throw new RuntimeException('Retention requires PDO exception mode.');
@@ -48,14 +57,26 @@ final class LogRetentionDatabase
         if ($this->connection->getAttribute(PDO::ATTR_PERSISTENT)) {
             throw new RuntimeException('Retention requires a non-persistent database session.');
         }
-        if (!$this->connection->getAttribute(PDO::ATTR_AUTOCOMMIT)) {
+        if ($this->driver === 'mysql' && !$this->connection->getAttribute(PDO::ATTR_AUTOCOMMIT)) {
             throw new RuntimeException('Retention requires an autocommit database session.');
         }
-        $database = $this->scalar('SELECT DATABASE()', []);
+        $database = $this->scalar($this->driver === 'mysql' ? 'SELECT DATABASE()' : 'SELECT current_database()', []);
         if (!is_string($database) || $database === '') {
             throw new RuntimeException('Retention database name unavailable.');
         }
         $this->lockName = 'misp:retention:' . substr(hash('sha256', $database . ':' . $this->table), 0, 48);
+        if ($this->driver === 'pgsql') {
+            // Advisory locks are database-local. Use the relation OID to
+            // identify the same table even through different search paths.
+            $oid = $this->scalar('SELECT CAST(to_regclass(?) AS oid)', [$this->table]);
+            if ($oid === null || $oid === false) {
+                throw new RuntimeException('Retention table is unavailable.');
+            }
+            $this->pgLockOids = array_values(unpack('N2', hash('sha256', 'misp:retention:' . $oid, true)));
+            $this->pgLockKeys = array_map(static function ($value) {
+                return $value > 2147483647 ? $value - 4294967296 : $value;
+            }, $this->pgLockOids);
+        }
     }
 
     public function acquireLock(): bool
@@ -65,6 +86,20 @@ final class LogRetentionDatabase
         }
         if ($this->locked) {
             throw new LogicException('Retention lock already acquired.');
+        }
+        if ($this->driver === 'pgsql') {
+            if ((int)$this->scalar('SELECT CASE WHEN pg_is_in_recovery() THEN 1 ELSE 0 END', []) === 1 ||
+                (int)$this->scalar("SELECT COUNT(*) FROM pg_extension WHERE extname IN ('bdr', 'pglogical')", []) > 0) {
+                throw new RuntimeException('Retention requires a single writable PostgreSQL server.');
+            }
+            if ($this->ownsPostgresLock()) {
+                return false;
+            }
+            $this->locked = (int)$this->scalar(
+                'SELECT CASE WHEN pg_try_advisory_lock(CAST(? AS integer), CAST(? AS integer)) THEN 1 ELSE 0 END',
+                $this->pgLockKeys
+            ) === 1;
+            return $this->locked;
         }
         $statement = $this->execute(
             "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('wsrep_on', 'wsrep_provider', 'group_replication_group_name')",
@@ -96,8 +131,19 @@ final class LogRetentionDatabase
         if (!$this->locked || $this->unusable) {
             return false;
         }
+        if ($this->driver === 'pgsql') {
+            return $this->ownsPostgresLock();
+        }
         $result = $this->scalar('SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName]);
         return $result === 1 || $result === '1';
+    }
+
+    private function ownsPostgresLock(): bool
+    {
+        return (int)$this->scalar("SELECT COUNT(*) FROM pg_locks
+            WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted
+            AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+            AND classid = CAST(? AS oid) AND objid = CAST(? AS oid) AND objsubid = 2", $this->pgLockOids) === 1;
     }
 
     public function releaseLock(): void
@@ -109,7 +155,9 @@ final class LogRetentionDatabase
             if ($this->unusable || $this->connection->inTransaction()) {
                 throw new RuntimeException('Retention session must be closed after an uncertain transaction outcome.');
             }
-            $result = $this->scalar('SELECT RELEASE_LOCK(?)', [$this->lockName]);
+            $result = $this->driver === 'pgsql'
+                ? $this->scalar('SELECT CASE WHEN pg_advisory_unlock(CAST(? AS integer), CAST(? AS integer)) THEN 1 ELSE 0 END', $this->pgLockKeys)
+                : $this->scalar('SELECT RELEASE_LOCK(?)', [$this->lockName]);
             if ($result !== 1 && $result !== '1') {
                 throw new RuntimeException('Could not release retention lock.');
             }
@@ -124,6 +172,13 @@ final class LogRetentionDatabase
     public function readPolicySetting(string $setting): ?string
     {
         $value = $this->scalar("SELECT value FROM {$this->settingsTable} WHERE setting = ?", [$setting]);
+        if (is_resource($value)) {
+            $bytes = stream_get_contents($value);
+            if ($bytes === false) {
+                throw new RuntimeException('Could not read retention setting bytes.');
+            }
+            $value = $bytes;
+        }
         return $value === false ? null : (string)$value;
     }
 
@@ -142,8 +197,8 @@ final class LogRetentionDatabase
             throw new RuntimeException('Retention checkpoint requires an owned lock and no active transaction.');
         }
         $statement = $this->execute(
-            "INSERT INTO {$this->checkpointTable} (setting, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?",
-            [$this->checkpointKey, $value, $value]
+            $this->dialect->upsert("INSERT INTO {$this->checkpointTable} (setting, value) VALUES (?, ?)", ['setting'], ['value']),
+            [$this->checkpointKey, $value]
         );
         $statement->closeCursor();
     }

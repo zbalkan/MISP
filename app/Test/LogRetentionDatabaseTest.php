@@ -536,6 +536,17 @@ class RetentionDatabaseTestModel
 
     public function getDataSource() { return $this; }
     public function getConnection(): PDO { return $this->pdo; }
+    public function name($column): string { return chr(96) . $column . chr(96); }
+    public function getSqlDialect()
+    {
+        if (!class_exists('App', false)) {
+            class_alias(RetentionModelTestApp::class, 'App');
+        }
+        require_once __DIR__ . '/../Lib/Migration/SqlDialect.php';
+        return new class($this) extends SqlDialect {
+            public function flavour() { return self::FLAVOUR_MYSQL; }
+        };
+    }
     public function fullTableName($model): string
     {
         return chr(96) . $this->prefix . (is_object($model) ? $model->table : $model) . chr(96);
@@ -553,6 +564,8 @@ class RetentionModelTestBase
     public $alias;
     public $table;
     public $retentionDatasource;
+
+    public function getSqlDialect() { return $this->retentionDatasource->getSqlDialect(); }
 
     public function getDataSource()
     {
