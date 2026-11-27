@@ -139,7 +139,7 @@ class SchedulerWorkerShell extends AppShell
         }
         $this->nextRetentionCheck = hrtime(true) + 60_000_000_000;
         try {
-            $database = new LogRetentionDatabase(ClassRegistry::init('AccessLog'));
+            $database = new LogRetentionDatabase(ClassRegistry::init('AccessLog'), null, true);
             if (!$this->retentionEnabled($database) || !$database->acquireLock()) {
                 return;
             }
