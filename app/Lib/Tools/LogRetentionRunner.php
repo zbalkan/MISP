@@ -21,15 +21,15 @@ final class LogRetentionRunner
         if ($runtimeSeconds <= 0 || $delayMicroseconds < 0) {
             throw new InvalidArgumentException('Invalid retention execution limits.');
         }
+        $started = hrtime(true);
         $days = LogRetentionPolicy::parse($readPolicy());
         if ($days === 0) {
-            return ['status' => 'disabled', 'reason' => 'disabled', 'complete' => false, 'affected' => 0, 'dryRun' => $dryRun];
+            return ['status' => 'disabled', 'reason' => 'disabled', 'complete' => false, 'affected' => 0, 'batches' => 0, 'days' => $days, 'cutoff' => null, 'durationSeconds' => (hrtime(true) - $started) / 1e9, 'dryRun' => $dryRun];
         }
         if (!$database->acquireLock()) {
-            return ['status' => 'busy', 'reason' => 'busy', 'complete' => false, 'affected' => 0, 'dryRun' => $dryRun];
+            return ['status' => 'busy', 'reason' => 'busy', 'complete' => false, 'affected' => 0, 'batches' => 0, 'days' => $days, 'cutoff' => null, 'durationSeconds' => (hrtime(true) - $started) / 1e9, 'dryRun' => $dryRun];
         }
-        return $this->withOwnedLock($database, function () use ($database, $readPolicy, $days, $dryRun, $runtimeSeconds, $delayMicroseconds, $persistCheckpoint) {
-            $started = hrtime(true);
+        return $this->withOwnedLock($database, function () use ($database, $readPolicy, $days, $dryRun, $runtimeSeconds, $delayMicroseconds, $persistCheckpoint, $started) {
             $timezone = $database->storageTimezone();
             $cutoff = LogRetentionPolicy::cutoff($days, new DateTimeImmutable('now', $timezone));
             $high = $database->highWaterMark();
@@ -79,6 +79,9 @@ final class LogRetentionRunner
             );
             $result['status'] = $result['complete'] ? 'complete' : 'partial';
             $result['reason'] = $reason;
+            $result['days'] = $days;
+            $result['cutoff'] = $cutoff;
+            $result['durationSeconds'] = (hrtime(true) - $started) / 1e9;
             return $result;
         });
     }
@@ -90,13 +93,19 @@ final class LogRetentionRunner
      */
     public function runFixedCutoff($database, DateTimeImmutable $cutoff): int
     {
+        return $this->runFixedCutoffResult($database, $cutoff)['affected'];
+    }
+
+    public function runFixedCutoffResult($database, DateTimeImmutable $cutoff, bool $dryRun = false): array
+    {
+        $started = hrtime(true);
         if ($cutoff > new DateTimeImmutable()) {
             throw new InvalidArgumentException('Retention cutoff must not be in the future.');
         }
         if (!$database->acquireLock()) {
             throw new RuntimeException('Another retention operation owns the database lock.');
         }
-        return $this->withOwnedLock($database, function () use ($database, $cutoff) {
+        return $this->withOwnedLock($database, function () use ($database, $cutoff, $dryRun, $started) {
             $firstBatch = true;
             $result = (new LogRetentionSweep())->run(
                 0,
@@ -119,9 +128,14 @@ final class LogRetentionRunner
                         throw new RuntimeException('System clock moved before the retention cutoff.');
                     }
                     return true;
-                }
+                },
+                $dryRun
             );
-            return $result['affected'];
+            $result['status'] = 'complete';
+            $result['reason'] = null;
+            $result['cutoff'] = $cutoff;
+            $result['durationSeconds'] = (hrtime(true) - $started) / 1e9;
+            return $result;
         });
     }
 

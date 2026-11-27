@@ -79,6 +79,20 @@ class LogRetentionRunnerTest extends TestCase
         $this->assertSame(0, $database->batches);
     }
 
+    public function testExplicitDryRunReportsCutoffWithoutCheckpointChanges(): void
+    {
+        $database = new RetentionRunnerTestDatabase();
+        $database->checkpoint = 'existing';
+        $cutoff = new DateTimeImmutable('2025-01-01T00:00:00Z');
+        $result = (new LogRetentionRunner())->runFixedCutoffResult($database, $cutoff, true);
+        $this->assertSame('complete', $result['status']);
+        $this->assertSame($cutoff, $result['cutoff']);
+        $this->assertSame(2, $result['batches']);
+        $this->assertTrue($result['dryRun']);
+        $this->assertSame('existing', $database->checkpoint);
+        $this->assertFalse($database->locked);
+    }
+
     public function testDryRunDoesNotPersistCheckpoint(): void
     {
         $database = new RetentionRunnerTestDatabase();

@@ -32,9 +32,6 @@ final class LogRetentionDatabase
         if (!isset($tables[$model->alias]) || $model->table !== $tables[$model->alias]) {
             throw new InvalidArgumentException('Unsupported retention model.');
         }
-        if ($model->alias !== 'AccessLog' && $logTimezone === null) {
-            throw new InvalidArgumentException('The log writer timezone must be explicitly established.');
-        }
         $this->storageTimezone = $model->alias === 'AccessLog' ? new DateTimeZone('UTC') : $logTimezone;
         $db = $model->getDataSource();
         $this->connection = $db->getConnection();
@@ -164,6 +161,9 @@ final class LogRetentionDatabase
 
     public function storageTimezone(): DateTimeZone
     {
+        if ($this->storageTimezone === null) {
+            throw new InvalidArgumentException('The log writer timezone must be explicitly established.');
+        }
         return $this->storageTimezone;
     }
 
@@ -171,11 +171,12 @@ final class LogRetentionDatabase
      * DATETIME has no offset. During a backward clock transition, retain the
      * entire repeated wall-clock interval until both occurrences have expired.
      */
-    private function storageCutoff(DateTimeImmutable $cutoff): string
+    public function storageCutoff(DateTimeImmutable $cutoff): string
     {
-        $local = $cutoff->setTimezone($this->storageTimezone);
+        $timezone = $this->storageTimezone();
+        $local = $cutoff->setTimezone($timezone);
         $timestamp = $local->getTimestamp();
-        $transitions = $this->storageTimezone->getTransitions($timestamp - 172800, $timestamp + 172800);
+        $transitions = $timezone->getTransitions($timestamp - 172800, $timestamp + 172800);
         if ($transitions !== false) {
             $previousOffset = $transitions[0]['offset'];
             foreach (array_slice($transitions, 1) as $transition) {

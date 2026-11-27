@@ -230,8 +230,10 @@ class LogRetentionDatabaseTest extends TestCase
 
     public function testLocalTableRequiresExplicitTimezone(): void
     {
+        $db = new LogRetentionDatabase(new RetentionDatabaseTestModel('Log', 'logs', $this->pdo, $this->prefix));
+        $this->assertSame('disabled', (new LogRetentionRunner())->run($db, static function () { return 0; })['status']);
         $this->expectException(InvalidArgumentException::class);
-        new LogRetentionDatabase(new RetentionDatabaseTestModel('Log', 'logs', $this->pdo, $this->prefix));
+        (new LogRetentionRunner())->run($db, static function () { return 30; });
     }
 
     public function testRunnerStopsOnPolicyChangeAndResumesRealDatabaseSweep(): void
