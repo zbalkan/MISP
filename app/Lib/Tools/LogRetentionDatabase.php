@@ -10,6 +10,8 @@ final class LogRetentionDatabase
 {
     private $connection;
     private $table;
+    private $lockName;
+    private $locked = false;
 
     public function __construct($model)
     {
@@ -20,6 +22,54 @@ final class LogRetentionDatabase
         $db = $model->getDataSource();
         $this->connection = $db->getConnection();
         $this->table = $db->fullTableName($model);
+        if ($this->connection->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
+            throw new RuntimeException('Retention locking is currently supported only on MySQL and MariaDB.');
+        }
+        if ($this->connection->getAttribute(PDO::ATTR_PERSISTENT)) {
+            throw new RuntimeException('Retention requires a non-persistent database session.');
+        }
+        $database = $this->scalar('SELECT DATABASE()', []);
+        if (!is_string($database) || $database === '') {
+            throw new RuntimeException('Retention database name unavailable.');
+        }
+        $this->lockName = 'misp:retention:' . substr(hash('sha256', $database . ':' . $this->table), 0, 48);
+    }
+
+    public function acquireLock(): bool
+    {
+        if ($this->locked) {
+            throw new LogicException('Retention lock already acquired.');
+        }
+        $result = $this->scalar('SELECT GET_LOCK(?, 0)', [$this->lockName]);
+        if ($result === 0 || $result === '0') {
+            return false;
+        }
+        if ($result !== 1 && $result !== '1') {
+            throw new RuntimeException('Could not acquire retention lock.');
+        }
+        $this->locked = true;
+        return true;
+    }
+
+    public function ownsLock(): bool
+    {
+        if (!$this->locked) {
+            return false;
+        }
+        $result = $this->scalar('SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName]);
+        return $result === 1 || $result === '1';
+    }
+
+    public function releaseLock(): void
+    {
+        if (!$this->locked) {
+            return;
+        }
+        $this->locked = false;
+        $result = $this->scalar('SELECT RELEASE_LOCK(?)', [$this->lockName]);
+        if ($result !== 1 && $result !== '1') {
+            throw new RuntimeException('Could not release retention lock.');
+        }
     }
 
     public function highWaterMark(): int
@@ -42,6 +92,9 @@ final class LogRetentionDatabase
         $params = [$first, $last, $cutoff->format('Y-m-d H:i:s.u')];
         if ($dryRun) {
             return (int)$this->scalar("SELECT COUNT(*) FROM {$this->table}" . $where, $params);
+        }
+        if (!$this->ownsLock()) {
+            throw new RuntimeException('Retention deletion requires an owned database lock.');
         }
         if ($this->connection->inTransaction()) {
             throw new RuntimeException('Retention requires its own transaction.');
