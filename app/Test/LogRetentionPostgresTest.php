@@ -56,6 +56,38 @@ class LogRetentionPostgresTest extends TestCase
         return new RetentionPostgresModel($alias, $table, $pdo ?? $this->pdo, $this->prefix);
     }
 
+    public function testProvisioningLockIsIndependentOfDeletion(): void
+    {
+        $make = function (PDO $pdo, bool $provisioning) {
+            return new LogRetentionDatabase($this->model('AccessLog', 'access_logs', $pdo), new DateTimeZone('UTC'), $provisioning);
+        };
+        $deletion = $make($this->pdo, false);
+        $provisioning = $make($this->connect(), true);
+        $competitor = $make($this->connect(), true);
+        $this->assertTrue($deletion->acquireLock());
+        try {
+            $this->assertTrue($provisioning->acquireLock());
+            try {
+                $this->assertFalse($competitor->acquireLock());
+                $this->assertTrue($deletion->ownsLock());
+                $this->assertTrue($provisioning->ownsLock());
+                try {
+                    $provisioning->loadCheckpoint();
+                    $this->fail('Provisioning lock must not authorise checkpoint access.');
+                } catch (LogicException $e) {
+                    $this->assertStringContainsString('Provisioning lock', $e->getMessage());
+                }
+            } finally {
+                $provisioning->releaseLock();
+            }
+            $this->assertTrue($competitor->acquireLock());
+            $competitor->releaseLock();
+            $this->assertTrue($deletion->ownsLock());
+        } finally {
+            $deletion->releaseLock();
+        }
+    }
+
     public function testBoundedDeletionLockingAndCheckpointUpsert(): void
     {
         foreach (['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'] as $alias => $table) {
