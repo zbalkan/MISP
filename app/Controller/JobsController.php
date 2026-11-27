@@ -92,7 +92,7 @@ class JobsController extends AppController
             foreach ($idList as $jobId) {
                 $job = $this->Job->find('first', [
                     'recursive' => -1,
-                    'conditions' => ['Job.id' => $jobId],
+                    'conditions' => ['Job.id' => $jobId, $this->Job->purgeableJobCondition()],
                 ]);
                 if (empty($job)) {
                     $failed++;
@@ -265,11 +265,12 @@ class JobsController extends AppController
         if ($this->request->is('post')) {
             if ($type === 'all') {
                 $conditions = array('Job.id !=' => 0);
-                $message = __('All jobs have been purged');
+                $message = __('Jobs have been purged, except protected log retention jobs.');
             } else {
                 $conditions = array('Job.progress' => 100);
-                $message = __('All completed jobs have been purged');
+                $message = __('Completed jobs have been purged, except protected log retention jobs.');
             }
+            $conditions[] = $this->Job->purgeableJobCondition();
             $this->Job->deleteAll($conditions, false);
             $this->Flash->success($message);
             $this->redirect(array('action' => 'index'));

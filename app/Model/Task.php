@@ -85,11 +85,13 @@ class Task extends AppModel
     {
         $db = $this->getDataSource();
         $table = $db->fullTableName($this);
+        $jobs = $db->fullTableName('jobs');
         $statement = $db->getConnection()->prepare("UPDATE $table SET last_job_id = ?, message = ?, last_run_at = ?
             WHERE id = ? AND type = 'Admin' AND action = ? AND user_id = 0 AND enabled = TRUE
-            AND next_execution_time = ? AND last_job_id IS NULL");
+            AND next_execution_time = ? AND last_job_id IS NULL
+            AND EXISTS (SELECT 1 FROM $jobs WHERE id = ? AND status = 0)");
         try {
-            $statement->execute([$jobId, 'Dispatch reserved', time(), $id, self::RETENTION_ACTION, $claim]);
+            $statement->execute([$jobId, 'Dispatch reserved', time(), $id, self::RETENTION_ACTION, $claim, $jobId]);
             return $statement->rowCount() === 1;
         } finally {
             $statement->closeCursor();

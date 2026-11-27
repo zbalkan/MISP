@@ -83,8 +83,9 @@ class LogRetentionDatabaseTest extends TestCase
         class_alias(RetentionModelTestApp::class, 'App');
         class_alias(RetentionModelTestBase::class, 'AppModel');
         require_once __DIR__ . '/../Model/Task.php';
+        require_once __DIR__ . '/../Model/Job.php';
         $this->createTable('scheduled_tasks', 'id INT PRIMARY KEY, type VARCHAR(100), action VARCHAR(40), user_id INT, enabled BOOLEAN, timer INT, next_execution_time INT, last_job_id INT NULL, message VARCHAR(255), last_run_at INT NULL');
-        $this->createTable('jobs', 'id INT PRIMARY KEY, status INT');
+        $this->createTable('jobs', "id INT PRIMARY KEY, status INT NOT NULL, job_type VARCHAR(32) NOT NULL DEFAULT 'admin_action', job_input TEXT NOT NULL, org_id INT NOT NULL DEFAULT 0");
         $table = $this->table('scheduled_tasks');
         $jobs = $this->table('jobs');
         $this->pdo->exec("INSERT INTO $table VALUES (1, 'Admin', 'enforceLogRetention', 0, TRUE, 86400, 100, NULL, '', NULL)");
@@ -98,7 +99,8 @@ class LogRetentionDatabaseTest extends TestCase
         $claim = $a->claimRetentionExecution($snapshot, 100);
         $this->assertSame(86500, $claim);
         $this->assertNull($b->claimRetentionExecution($snapshot, 100));
-        $this->pdo->exec("INSERT INTO $jobs VALUES (7, 0)");
+        $this->assertFalse($a->attachRetentionJob(1, $claim, 7));
+        $this->pdo->exec("INSERT INTO $jobs (id, status, job_input) VALUES (7, 0, 'enforceLogRetention')");
         $this->assertFalse($b->attachRetentionJob(1, 100, 7));
         $this->assertTrue($a->attachRetentionJob(1, $claim, 7));
         $this->assertFalse($b->attachRetentionJob(1, $claim, 7));
@@ -108,8 +110,17 @@ class LogRetentionDatabaseTest extends TestCase
             $this->assertNull($b->claimRetentionExecution($snapshot, 86500));
         }
         $this->pdo->exec("UPDATE $jobs SET status = 4");
+        $this->pdo->exec("INSERT INTO $jobs (id, status, job_input) VALUES (8, 4, 'enforceLogRetention'), (9, 0, 'other'), (10, 0, 'enforceLogRetention')");
+        $jobModel = new Job();
+        $jobModel->retentionDatasource = new RetentionDatabaseTestModel('Job', 'jobs', $this->pdo, $this->prefix);
+        $condition = $jobModel->purgeableJobCondition();
+        $this->assertSame([8, 9], array_map('intval', $this->pdo->query("SELECT id FROM $jobs WHERE $condition ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
+        $this->pdo->exec("DELETE FROM $jobs WHERE $condition");
+        $this->assertSame([7, 10], array_map('intval', $this->pdo->query("SELECT id FROM $jobs ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
         $this->assertSame(172900, $b->claimRetentionExecution($snapshot, 86500));
         $this->assertNull($a->claimRetentionExecution($snapshot, 86500));
+        // The former last terminal job is no longer protected.
+        $this->assertSame([7], array_map('intval', $this->pdo->query("SELECT id FROM $jobs WHERE $condition")->fetchAll(PDO::FETCH_COLUMN)));
     }
 
     public function testBoundedDeletionAndDryRunAcrossAllTables(): void
