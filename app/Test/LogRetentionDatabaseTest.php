@@ -269,9 +269,14 @@ class LogRetentionDatabaseTest extends TestCase
         $this->seed('logs');
         $db = $this->adapter('Log', 'logs');
         $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
-        $this->assertSame(3, $db->processBatch(1, LogRetentionSweep::MAX_BATCH_SIZE, $cutoff, true));
-        $this->expectException(InvalidArgumentException::class);
-        $db->processBatch(1, LogRetentionSweep::MAX_BATCH_SIZE + 1, $cutoff, true);
+        $this->assertTrue($db->acquireLock());
+        try {
+            $this->assertSame(3, $db->processBatch(1, LogRetentionSweep::MAX_BATCH_SIZE, $cutoff, true));
+            $this->expectException(InvalidArgumentException::class);
+            $db->processBatch(1, LogRetentionSweep::MAX_BATCH_SIZE + 1, $cutoff, true);
+        } finally {
+            $db->releaseLock();
+        }
     }
 
     public function testLostLockCannotReleaseAnotherSessionLockOrBeReused(): void
@@ -295,6 +300,13 @@ class LogRetentionDatabaseTest extends TestCase
         } finally {
             $b->releaseLock();
         }
+    }
+
+    public function testDryRunWithoutLockIsRejected(): void
+    {
+        $db = $this->adapter('AccessLog', 'access_logs');
+        $this->expectExceptionMessage('Retention batch requires an owned database lock.');
+        $db->processBatch(1, 10000, new DateTimeImmutable('2026-01-01'), true);
     }
 
     public function testDeletionWithoutLockIsRejected(): void

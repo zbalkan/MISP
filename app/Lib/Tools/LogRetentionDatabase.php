@@ -201,11 +201,11 @@ final class LogRetentionDatabase
         if ($this->unusable) {
             throw new RuntimeException('Retention session is unusable.');
         }
+        if (!$this->ownsLock()) {
+            throw new RuntimeException('Retention batch requires an owned database lock.');
+        }
         if ($dryRun) {
             return (int)$this->scalar("SELECT COUNT(*) FROM {$this->table}" . $where, $params);
-        }
-        if (!$this->ownsLock()) {
-            throw new RuntimeException('Retention deletion requires an owned database lock.');
         }
         if ($this->connection->inTransaction()) {
             throw new RuntimeException('Retention requires its own transaction.');

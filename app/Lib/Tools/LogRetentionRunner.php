@@ -10,6 +10,9 @@ require_once __DIR__ . '/LogRetentionCleanupException.php';
 /**
  * Orchestrates a single table sweep. The policy reader must read current
  * configuration, not a cached Configure value.
+ * Dry runs start from zero and never persist or resume a checkpoint. A partial
+ * dry run reports only the examined range, not a total count for the table.
+ * Even a complete dry run is not a transactional snapshot of concurrent writes.
  */
 final class LogRetentionRunner
 {
@@ -20,10 +23,10 @@ final class LogRetentionRunner
         }
         $days = LogRetentionPolicy::parse($readPolicy());
         if ($days === 0) {
-            return ['status' => 'disabled', 'affected' => 0, 'dryRun' => $dryRun];
+            return ['status' => 'disabled', 'reason' => 'disabled', 'complete' => false, 'affected' => 0, 'dryRun' => $dryRun];
         }
         if (!$database->acquireLock()) {
-            return ['status' => 'busy', 'affected' => 0, 'dryRun' => $dryRun];
+            return ['status' => 'busy', 'reason' => 'busy', 'complete' => false, 'affected' => 0, 'dryRun' => $dryRun];
         }
         $failure = null;
         try {

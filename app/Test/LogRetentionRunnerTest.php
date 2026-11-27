@@ -52,6 +52,33 @@ class LogRetentionRunnerTest extends TestCase
         (new LogRetentionRunner())->run($database, static function () { return 30; }, true, 1800, 0);
     }
 
+    public function testPartialDryRunLeavesExistingCheckpointUntouched(): void
+    {
+        $database = new RetentionRunnerTestDatabase();
+        $database->checkpoint = 'existing checkpoint';
+        $result = (new LogRetentionRunner())->run($database, static function () use ($database) {
+            return $database->batches === 0 ? 30 : 365;
+        }, true, 1800, 0);
+        $this->assertSame('partial', $result['status']);
+        $this->assertFalse($result['complete']);
+        $this->assertSame('policy_changed', $result['reason']);
+        $this->assertSame(1, $result['affected']);
+        $this->assertSame(10000, $result['cursor']);
+        $this->assertSame(20000, $result['highWaterMark']);
+        $this->assertSame('existing checkpoint', $database->checkpoint);
+        $this->assertFalse($database->locked);
+    }
+
+    public function testBusyDryRunDoesNotReportCompleteCount(): void
+    {
+        $database = new RetentionRunnerTestDatabase();
+        $database->busy = true;
+        $result = (new LogRetentionRunner())->run($database, static function () { return 30; }, true);
+        $this->assertSame('busy', $result['status']);
+        $this->assertFalse($result['complete']);
+        $this->assertSame(0, $database->batches);
+    }
+
     public function testDryRunDoesNotPersistCheckpoint(): void
     {
         $database = new RetentionRunnerTestDatabase();
@@ -66,13 +93,14 @@ class LogRetentionRunnerTest extends TestCase
 class RetentionRunnerTestDatabase
 {
     public $locked = false;
+    public $busy = false;
     public $acquisitions = 0;
     public $batches = 0;
     public $checkpoint = null;
     public $batchFailure = null;
     public $releaseFailure = null;
 
-    public function acquireLock(): bool { ++$this->acquisitions; return $this->locked = true; }
+    public function acquireLock(): bool { ++$this->acquisitions; return $this->locked = !$this->busy; }
     public function ownsLock(): bool { return $this->locked; }
     public function releaseLock(): void
     {
