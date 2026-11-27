@@ -1,5 +1,6 @@
 <?php
 App::uses('AppModel', 'Model');
+App::uses('Job', 'Model');
 
 class Task extends AppModel
 {
@@ -71,9 +72,9 @@ class Task extends AppModel
         $statement = $pdo->prepare("UPDATE $table SET next_execution_time = ?, last_job_id = NULL
             WHERE id = ? AND type = 'Admin' AND action = ? AND user_id = 0 AND enabled = TRUE
             AND timer = ? AND next_execution_time = ? AND next_execution_time <= ?
-            AND (last_job_id IS NULL OR last_job_id IN (SELECT id FROM $jobs WHERE status IN (3, 4)))");
+            AND (last_job_id IS NULL OR last_job_id IN (SELECT id FROM $jobs WHERE status IN (?, ?)))");
         try {
-            $statement->execute([$next, $task['id'], self::RETENTION_ACTION, self::RETENTION_INTERVAL, $task['next_execution_time'], $now]);
+            $statement->execute([$next, $task['id'], self::RETENTION_ACTION, self::RETENTION_INTERVAL, $task['next_execution_time'], $now, Job::STATUS_FAILED, Job::STATUS_COMPLETED]);
             return $statement->rowCount() === 1 ? $next : null;
         } finally {
             $statement->closeCursor();
@@ -89,9 +90,9 @@ class Task extends AppModel
         $statement = $db->getConnection()->prepare("UPDATE $table SET last_job_id = ?, message = ?, last_run_at = ?
             WHERE id = ? AND type = 'Admin' AND action = ? AND user_id = 0 AND enabled = TRUE
             AND next_execution_time = ? AND last_job_id IS NULL
-            AND EXISTS (SELECT 1 FROM $jobs WHERE id = ? AND status = 0)");
+            AND EXISTS (SELECT 1 FROM $jobs WHERE id = ? AND status = ?)");
         try {
-            $statement->execute([$jobId, 'Dispatch reserved', time(), $id, self::RETENTION_ACTION, $claim, $jobId]);
+            $statement->execute([$jobId, 'Dispatch reserved', time(), $id, self::RETENTION_ACTION, $claim, $jobId, Job::STATUS_CREATED]);
             return $statement->rowCount() === 1;
         } finally {
             $statement->closeCursor();
