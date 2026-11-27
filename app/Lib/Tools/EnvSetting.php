@@ -1,6 +1,7 @@
 <?php
 App::uses('SystemSetting', 'Model');
 App::uses('LogRetentionPolicy', 'Tools');
+require_once __DIR__ . '/ConfigSettingReader.php';
 
 /**
  * Loads MISP settings from environment variables as a third configuration
@@ -28,7 +29,7 @@ App::uses('LogRetentionPolicy', 'Tools');
  */
 class EnvSetting
 {
-    const ENV_PREFIX = 'MISP_SETTING_';
+    const ENV_PREFIX = ConfigSettingReader::ENV_PREFIX;
 
     /**
      * Apply every setting defined via environment variables into the global
@@ -100,7 +101,7 @@ class EnvSetting
      */
     public static function envVariableName($settingName)
     {
-        return self::ENV_PREFIX . str_replace('.', '__', $settingName);
+        return ConfigSettingReader::environmentVariableName($settingName);
     }
 
     /**

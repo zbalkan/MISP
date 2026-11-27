@@ -39,6 +39,26 @@ class LogRetentionPolicyReaderTest extends TestCase
         }
     }
 
+    public function testFreshReaderPreservesMissingNullAndNestedValues(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'config-');
+        $name = 'Plugin.Example.threshold';
+        $env = ConfigSettingReader::environmentVariableName($name);
+        $previous = getenv($env);
+        try {
+            putenv($env);
+            file_put_contents($path, '<?php $config = ["MISP" => [], "Plugin" => ["Example" => ["threshold" => null]]];');
+            $this->assertNull(ConfigSettingReader::readRaw($name, $path, static function () { throw new RuntimeException('Database disabled'); }, 10));
+            file_put_contents($path, '<?php $config = ["MISP" => [], "Plugin" => []];');
+            $this->assertSame(10, ConfigSettingReader::readRaw($name, $path, static function () { return null; }, 10));
+            putenv($env . '=1e2');
+            $this->assertSame('1e2', ConfigSettingReader::readRaw($name, $path, static function () { return null; }, 10));
+        } finally {
+            putenv($previous === false ? $env : $env . '=' . $previous);
+            unlink($path);
+        }
+    }
+
     public function testRefreshAndPrecedence(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'retention-');
