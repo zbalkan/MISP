@@ -66,8 +66,8 @@ final class LogRetentionCheckpoint
                 'cursor' => $state['cursor'],
                 'highWaterMark' => $state['highWaterMark'],
                 'cutoff' => $localCutoff,
-                'deletedRows' => $state['deletedRows'] ?? 0,
-                'completedBatches' => $state['completedBatches'] ?? 0,
+                'deletedRows' => $state['version'] === 2 ? $state['deletedRows'] : 0,
+                'completedBatches' => $state['version'] === 2 ? $state['completedBatches'] : 0,
             ];
         } catch (JsonException | ValueError $e) {
             return null;
