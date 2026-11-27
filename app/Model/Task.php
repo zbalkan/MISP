@@ -28,6 +28,33 @@ class Task extends AppModel
         return ($task['type'] ?? null) === 'Admin' && ($task['action'] ?? null) === self::RETENTION_ACTION;
     }
 
+    /** Explain a blocked claim using the current task snapshot, not a recovery decision. */
+    public static function retentionBlockReason(array $task, ?array $job, int $now): ?string
+    {
+        if (!self::isManagedRetention($task) || empty($task['enabled']) ||
+            (int)$task['next_execution_time'] > $now) {
+            return null;
+        }
+        if ((int)$task['user_id'] !== 0 || (int)$task['timer'] !== self::RETENTION_INTERVAL) {
+            return 'Invalid managed retention task owner or interval.';
+        }
+        if (empty($task['last_job_id'])) {
+            return null;
+        }
+        $id = (int)$task['last_job_id'];
+        if (!$job || (int)($job['id'] ?? 0) !== $id || !isset($job['status'])) {
+            return "Managed retention task blocked by missing job $id.";
+        }
+        $status = (int)$job['status'];
+        if (in_array($status, [Job::STATUS_FAILED, Job::STATUS_COMPLETED], true)) {
+            return null;
+        }
+        if (in_array($status, [Job::STATUS_CREATED, Job::STATUS_WAITING, Job::STATUS_RUNNING], true)) {
+            return "Managed retention task blocked by nonterminal job $id (status $status).";
+        }
+        return "Managed retention task blocked by job $id with unexpected status $status.";
+    }
+
     /** Caller serializes provisioning across scheduler sessions. */
     public function ensureRetentionTask(int $now): void
     {
