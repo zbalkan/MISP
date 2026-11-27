@@ -123,6 +123,76 @@ class LogRetentionDatabaseTest extends TestCase
         $this->assertSame([7], array_map('intval', $this->pdo->query("SELECT id FROM $jobs WHERE $condition")->fetchAll(PDO::FETCH_COLUMN)));
     }
 
+    public function testCheckpointPersistenceBenchmark(): void
+    {
+        $table = $this->table('access_logs');
+        $stateTable = $this->table('admin_settings');
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $high = 200000;
+        $batchSize = 10000;
+        // Each range retains one recent row, forcing restart to revisit it.
+        foreach ([1, 5, 0] as $interval) {
+            $this->pdo->exec("DELETE FROM $table");
+            $this->pdo->exec("DELETE FROM $stateTable");
+            for ($id = 1; $id <= $high; $id += $batchSize) {
+                $recent = $id + 1;
+                $this->pdo->exec("INSERT INTO $table (id, created) VALUES ($id, '2000-01-01'), ($recent, '2099-01-01')");
+            }
+            $db = $this->adapter('AccessLog', 'access_logs');
+            $this->assertTrue($db->acquireLock());
+            $writes = 0;
+            $processed = 0;
+            $sweep = new LogRetentionSweep($batchSize);
+            $save = function ($cursor) use ($db, $interval, $cutoff, $high, &$writes, &$processed) {
+                if ($interval > 0 && ($processed % $interval === 0 || $cursor === $high)) {
+                    $db->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, $cursor, $high));
+                    ++$writes;
+                }
+            };
+            $batch = function ($first, $last, $cutoff, $dryRun) use ($db, &$processed) {
+                $count = $db->processBatch($first, $last, $cutoff, $dryRun);
+                ++$processed;
+                return $count;
+            };
+            try {
+                $start = hrtime(true);
+                $first = $sweep->run(0, $high, $cutoff, [$db, 'nextId'], $batch, $save,
+                    static function () use (&$processed) { return $processed < 13; });
+                $initialMs = (hrtime(true) - $start) / 1e6;
+            } finally {
+                $db->releaseLock();
+            }
+            $this->assertFalse($first['complete']);
+            $this->assertSame(13, $first['affected']);
+            $initialWrites = $writes;
+            $db = $this->adapter('AccessLog', 'access_logs', $this->connect());
+            $this->assertTrue($db->acquireLock());
+            try {
+                $start = hrtime(true);
+                $state = LogRetentionCheckpoint::resume($db->loadCheckpoint(), 30, $cutoff, $high);
+                $cursor = $state['cursor'] ?? 0;
+                $second = $sweep->run($cursor, $high, $cutoff, [$db, 'nextId'],
+                    [$db, 'processBatch'], static function () {}, static function () { return true; });
+                $resumeMs = (hrtime(true) - $start) / 1e6;
+            } finally {
+                $db->releaseLock();
+            }
+            $this->assertTrue($second['complete']);
+            $this->assertSame(7, $second['affected']);
+            $this->assertSame(20, count($this->ids('access_logs')));
+            $this->assertSame($interval === 0 ? 0 : intdiv(13, $interval), $initialWrites);
+            fwrite(STDOUT, json_encode([
+                'benchmark' => 'checkpoint_recovery_sparse_mixed',
+                'interval_batches' => $interval,
+                'initial_ms' => $initialMs,
+                'checkpoint_writes' => $initialWrites,
+                'resume_cursor' => $cursor,
+                'recovery_ms' => $resumeMs,
+                'recovery_batches' => $second['batches'],
+            ], JSON_THROW_ON_ERROR) . PHP_EOL);
+        }
+    }
+
     public function testBoundedDeletionAndDryRunAcrossAllTables(): void
     {
         $cutoff = new DateTimeImmutable('2026-01-01 00:00:00', new DateTimeZone('UTC'));
