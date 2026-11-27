@@ -628,6 +628,57 @@ class LogRetentionDatabaseTest extends TestCase
         $this->fail('Database did not release the disconnected session lock within five seconds.');
     }
 
+    public function testKilledSessionRecoversCommittedBatchWithoutCheckpoint(): void
+    {
+        $this->seed('access_logs');
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $worker = $this->connect();
+        $connectionId = (int)$worker->query('SELECT CONNECTION_ID()')->fetchColumn();
+        $db = $this->adapter('AccessLog', 'access_logs', $worker);
+        $this->assertTrue($db->acquireLock());
+        $high = $db->highWaterMark();
+        $checkpoint = LogRetentionCheckpoint::encode(30, $cutoff, 0, $high);
+        $db->saveCheckpoint($checkpoint);
+        $this->assertSame(2, $db->processBatch(1, 10000, $cutoff, false));
+        $this->assertSame([2, 30000, 30001], $this->ids('access_logs'));
+        // Terminate the server session after commit, before checkpoint update.
+        $this->pdo->exec("KILL CONNECTION $connectionId");
+        try {
+            $db->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, 10000, $high));
+            $this->fail('A terminated session must not advance the checkpoint.');
+        } catch (PDOException $e) {
+            $this->assertNotEmpty($e->getMessage());
+        }
+        unset($db, $worker);
+        $recovery = $this->adapter('AccessLog', 'access_logs', $this->connect());
+        $deadline = hrtime(true) + 5_000_000_000;
+        while (!$recovery->acquireLock()) {
+            if (hrtime(true) >= $deadline) {
+                $this->fail('Killed session did not release its retention lock.');
+            }
+            usleep(10000);
+        }
+        try {
+            $this->assertSame($checkpoint, $recovery->loadCheckpoint());
+            $state = LogRetentionCheckpoint::resume($recovery->loadCheckpoint(), 30, $cutoff, $high);
+            $this->assertSame(0, $state['cursor']);
+            $result = (new LogRetentionSweep())->run(
+                $state['cursor'], $high, $cutoff, [$recovery, 'nextId'],
+                [$recovery, 'processBatch'],
+                function ($cursor) use ($recovery, $cutoff, $high) {
+                    $recovery->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, $cursor, $high));
+                },
+                static function () { return true; }
+            );
+            $this->assertTrue($result['complete']);
+            $this->assertSame(1, $result['affected']);
+            $this->assertSame([2, 30001], $this->ids('access_logs'));
+            $this->assertSame(LogRetentionCheckpoint::encode(30, $cutoff, $high, $high), $recovery->loadCheckpoint());
+        } finally {
+            $recovery->releaseLock();
+        }
+    }
+
     public function testFailedDeleteRollsBackAndPreservesCheckpoint(): void
     {
         $this->seed('audit_logs');
