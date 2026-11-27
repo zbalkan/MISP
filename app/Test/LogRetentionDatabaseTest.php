@@ -248,6 +248,82 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testKeysetBatchingBenchmark(): void
+    {
+        $table = $this->table('access_logs');
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        foreach ([1, 20] as $stride) {
+            foreach (['range', 'keyset'] as $strategy) {
+                $this->pdo->exec("DELETE FROM $table");
+                $expected = [];
+                for ($offset = 0; $offset < 20000; $offset += 500) {
+                    $values = [];
+                    for ($i = $offset; $i < $offset + 500; ++$i) {
+                        $id = 1 + $i * $stride;
+                        $expired = $i % 2 === 0;
+                        $created = $expired ? '2000-01-01' : '2099-01-01';
+                        $values[] = "($id, '$created')";
+                        if (!$expired) {
+                            $expected[] = $id;
+                        }
+                    }
+                    $this->pdo->exec("INSERT INTO $table (id, created) VALUES " . implode(',', $values));
+                }
+                $db = $this->adapter('AccessLog', 'access_logs');
+                $this->assertTrue($db->acquireLock());
+                try {
+                    $high = $db->highWaterMark();
+                    $start = hrtime(true);
+                    if ($strategy === 'range') {
+                        $result = (new LogRetentionSweep())->run(0, $high, $cutoff,
+                            [$db, 'nextId'], [$db, 'processBatch'], static function () {}, [$db, 'ownsLock']);
+                        $batches = $result['batches'];
+                        $deleted = $result['affected'];
+                    } else {
+                        $cursor = $batches = $deleted = 0;
+                        while ($cursor < $high) {
+                            $this->assertTrue($db->ownsLock());
+                            $this->pdo->beginTransaction();
+                            try {
+                                $ids = $this->pdo->query("SELECT id FROM $table WHERE id > $cursor AND id <= $high ORDER BY id LIMIT 10000")->fetchAll(PDO::FETCH_COLUMN);
+                                if (!$ids) {
+                                    $this->pdo->commit();
+                                    break;
+                                }
+                                // Restrict the delete to selected IDs, not their numeric range.
+                                $idList = implode(',', array_map('intval', $ids));
+                                $count = $this->pdo->exec("DELETE FROM $table WHERE id IN ($idList) AND created < '2026-01-01'");
+                                $this->assertLessThanOrEqual(count($ids), $count);
+                                $this->pdo->commit();
+                                $cursor = (int)end($ids);
+                                $deleted += $count;
+                                ++$batches;
+                            } finally {
+                                if ($this->pdo->inTransaction()) {
+                                    $this->pdo->rollBack();
+                                }
+                            }
+                        }
+                    }
+                    $elapsedMs = (hrtime(true) - $start) / 1e6;
+                } finally {
+                    $db->releaseLock();
+                }
+                $this->assertSame(10000, $deleted);
+                $this->assertSame($expected, $this->ids('access_logs'));
+                fwrite(STDOUT, json_encode([
+                    'benchmark' => 'keyset_comparison',
+                    'strategy' => $strategy,
+                    'id_stride' => $stride,
+                    'batches' => $batches,
+                    'deleted' => $deleted,
+                    'elapsed_ms' => $elapsedMs,
+                    'nominal_delay_ms' => max(0, $batches - 1) * 200,
+                ], JSON_THROW_ON_ERROR) . PHP_EOL);
+            }
+        }
+    }
+
     public function testTimestampDistributionBenchmark(): void
     {
         $table = $this->table('access_logs');
