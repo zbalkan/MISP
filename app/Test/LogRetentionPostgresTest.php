@@ -123,6 +123,54 @@ class LogRetentionPostgresTest extends TestCase
         }
     }
 
+    public function testTerminatedBackendRecoversCommittedBatchWithoutCheckpoint(): void
+    {
+        $table = $this->table('access_logs');
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2025-01-01'), (2, '2026-01-01'), (10000, '2025-12-31'), (30000, '2025-01-01'), (30001, '2026-01-02')");
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $worker = $this->connect();
+        $pid = (int)$worker->query('SELECT pg_backend_pid()')->fetchColumn();
+        $db = new LogRetentionDatabase($this->model('AccessLog', 'access_logs', $worker), new DateTimeZone('UTC'));
+        $this->assertTrue($db->acquireLock());
+        $high = $db->highWaterMark();
+        $checkpoint = LogRetentionCheckpoint::encode(30, $cutoff, 0, $high);
+        $db->saveCheckpoint($checkpoint);
+        $this->assertSame(2, $db->processBatch(1, 10000, $cutoff, false));
+        $ids = function () use ($table) {
+            return array_map('intval', $this->pdo->query("SELECT id FROM $table ORDER BY id")->fetchAll(PDO::FETCH_COLUMN));
+        };
+        $this->assertSame([2, 30000, 30001], $ids());
+        $this->assertTrue((bool)$this->pdo->query("SELECT pg_terminate_backend($pid, 5000)")->fetchColumn());
+        try {
+            $db->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, 10000, $high));
+            $this->fail('A terminated backend must not advance the checkpoint.');
+        } catch (PDOException $e) {
+            $this->assertNotEmpty($e->getMessage());
+        }
+        unset($db, $worker);
+        $recovery = new LogRetentionDatabase($this->model('AccessLog', 'access_logs', $this->connect()), new DateTimeZone('UTC'));
+        $this->assertTrue($recovery->acquireLock());
+        try {
+            $this->assertSame($checkpoint, $recovery->loadCheckpoint());
+            $state = LogRetentionCheckpoint::resume($recovery->loadCheckpoint(), 30, $cutoff, $high);
+            $this->assertSame(0, $state['cursor']);
+            $result = (new LogRetentionSweep())->run(
+                $state['cursor'], $high, $cutoff, [$recovery, 'nextId'],
+                [$recovery, 'processBatch'],
+                function ($cursor) use ($recovery, $cutoff, $high) {
+                    $recovery->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, $cursor, $high));
+                },
+                static function () { return true; }
+            );
+            $this->assertTrue($result['complete']);
+            $this->assertSame(1, $result['affected']);
+            $this->assertSame([2, 30001], $ids());
+            $this->assertSame(LogRetentionCheckpoint::encode(30, $cutoff, $high, $high), $recovery->loadCheckpoint());
+        } finally {
+            $recovery->releaseLock();
+        }
+    }
+
     public function testConfiguredPolicyReadsByteaAndLegacyCutoffRemainsAvailable(): void
     {
         $settings = $this->table('system_settings');
