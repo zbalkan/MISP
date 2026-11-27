@@ -255,21 +255,19 @@ class LogShell extends AppShell
         } catch (Throwable $e) {
             return $this->retentionError('retention', $e);
         }
-        $success = true;
-        foreach (['audit_logs' => $this->AuditLog, 'access_logs' => $this->AccessLog, 'logs' => $this->Log] as $category => $model) {
-            try {
-                $result = LogRetentionService::runConfigured($model, $this->retentionConfigFile(), (bool)$this->param('dry-run'), $timezone);
-                $this->reportRetention($category, $result);
-                if (!in_array($result['status'], ['complete', 'disabled'], true)) {
-                    $success = false;
+        return LogRetentionService::runAllConfigured(
+            function ($alias) use ($timezone) {
+                return LogRetentionService::runConfigured($this->{$alias}, $this->retentionConfigFile(), (bool)$this->param('dry-run'), $timezone);
+            },
+            function ($category, $result, $progress) {
+                if ($result !== null) {
+                    $this->reportRetention($category, $result);
                 }
-            } catch (Throwable $e) {
-                // An uncertain transaction or lock outcome must terminate the
-                // command rather than reusing the datasource for another table.
-                return $this->retentionError($category, $e);
+            },
+            function ($category, $error, $progress) {
+                $this->retentionError($category, $error);
             }
-        }
-        return $success;
+        );
     }
 
     protected function retentionConfigFile(): string
@@ -326,12 +324,8 @@ class LogShell extends AppShell
 
     private function reportRetentionException(Throwable $error): void
     {
-        $this->err(get_class($error) . ': ' . $error->getMessage());
-        if ($error instanceof LogRetentionCleanupException) {
-            $this->reportRetentionException($error->getCleanupFailure());
-        }
-        if ($error->getPrevious() !== null) {
-            $this->reportRetentionException($error->getPrevious());
+        foreach (LogRetentionService::describeFailure($error) as $message) {
+            $this->err($message);
         }
     }
 }

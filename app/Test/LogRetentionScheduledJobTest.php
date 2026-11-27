@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 
-require_once __DIR__ . '/../Lib/Tools/LogRetentionScheduledJob.php';
+require_once __DIR__ . '/../Lib/Tools/LogRetentionService.php';
 require_once __DIR__ . '/../Lib/Tools/BackgroundJobs/BackgroundJob.php';
 
 class LogRetentionScheduledJobTest extends TestCase
@@ -13,37 +13,39 @@ class LogRetentionScheduledJobTest extends TestCase
     {
         $calls = [];
         $reports = [];
-        $result = LogRetentionScheduledJob::run(function ($alias) use (&$calls) {
+        $result = LogRetentionService::runAllConfigured(function ($alias) use (&$calls) {
             $calls[] = $alias;
             return ['status' => $alias === 'AuditLog' ? 'partial' : 'disabled', 'days' => 30,
                 'cutoff' => null, 'batches' => 1, 'affected' => 2, 'durationSeconds' => 0.1, 'reason' => 'runtime_limit'];
-        }, function ($message, $progress) use (&$reports) {
-            $reports[] = [$message, $progress];
-        });
+        }, function ($category, $result, $progress) use (&$reports) {
+            $reports[] = [$category, $result, $progress];
+        }, static function ($category, $error, $progress) { throw $error; });
         $this->assertFalse($result);
         $this->assertSame(['AuditLog', 'AccessLog', 'Log'], $calls);
-        $this->assertStringContainsString('status=partial', $reports[1][0]);
-        $this->assertSame(99, $reports[5][1]);
+        $this->assertSame('partial', $reports[1][1]['status']);
+        $this->assertSame(99, $reports[5][2]);
     }
 
     public function testFailureStopsBeforeNextTable(): void
     {
         $calls = [];
         $reports = [];
-        $this->assertFalse(LogRetentionScheduledJob::run(function ($alias) use (&$calls) {
+        $this->assertFalse(LogRetentionService::runAllConfigured(function ($alias) use (&$calls) {
             $calls[] = $alias;
             throw new RuntimeException('database unavailable');
-        }, function ($message, $progress) use (&$reports) { $reports[] = $message; }));
+        }, static function ($category, $result, $progress) {}, function ($category, $error, $progress) use (&$reports) {
+            $reports = LogRetentionService::describeFailure($error);
+        }));
         $this->assertSame(['AuditLog'], $calls);
-        $this->assertStringContainsString('database unavailable', $reports[1]);
+        $this->assertStringContainsString('database unavailable', $reports[0]);
     }
 
     public function testDisabledPoliciesCompleteWithoutDeletion(): void
     {
-        $this->assertTrue(LogRetentionScheduledJob::run(static function ($alias) {
+        $this->assertTrue(LogRetentionService::runAllConfigured(static function ($alias) {
             return ['status' => 'disabled', 'days' => 0, 'cutoff' => null, 'batches' => 0,
                 'affected' => 0, 'durationSeconds' => 0, 'reason' => 'disabled'];
-        }, static function ($message, $progress) {}));
+        }, static function ($category, $result, $progress) {}, static function ($category, $error, $progress) { throw $error; }));
     }
 
     public function testOnlyRetentionJobReceivesRawRetentionOverrides(): void

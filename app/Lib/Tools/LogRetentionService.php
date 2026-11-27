@@ -9,6 +9,40 @@ require_once __DIR__ . '/LogRetentionPolicyReader.php';
 /** Shared entry point for the supported MISP log models. */
 final class LogRetentionService
 {
+    /** Run configured policies once, using caller-specific reporting. */
+    public static function runAllConfigured(callable $runTable, callable $report, callable $reportFailure): bool
+    {
+        $success = true;
+        foreach (['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'] as $alias => $category) {
+            $progress = (int) floor(array_search($alias, ['AuditLog', 'AccessLog', 'Log'], true) * 100 / 3);
+            $report($category, null, $progress);
+            try {
+                $result = $runTable($alias);
+            } catch (Throwable $e) {
+                // Never reuse a potentially uncertain database session.
+                $reportFailure($category, $e, $progress);
+                return false;
+            }
+            $report($category, $result, min(99, $progress + 34));
+            if (!in_array($result['status'], ['complete', 'disabled'], true)) {
+                $success = false;
+            }
+        }
+        return $success;
+    }
+
+    public static function describeFailure(Throwable $error): array
+    {
+        $messages = [get_class($error) . ': ' . $error->getMessage()];
+        if ($error instanceof LogRetentionCleanupException) {
+            $messages = array_merge($messages, self::describeFailure($error->getCleanupFailure()));
+        }
+        if ($error->getPrevious() !== null) {
+            $messages = array_merge($messages, self::describeFailure($error->getPrevious()));
+        }
+        return $messages;
+    }
+
     public static function deleteAccessLogsBefore($model, DateTimeImmutable $cutoff): int
     {
         if ($model->alias !== 'AccessLog') {

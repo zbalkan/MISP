@@ -4,7 +4,6 @@ App::uses('ProcessTool', 'Tools');
 App::uses('FileAccessTool', 'Tools');
 App::uses('JsonTool', 'Tools');
 App::uses('LogRetentionPolicy', 'Tools');
-App::uses('LogRetentionScheduledJob', 'Tools');
 App::uses('LogRetentionService', 'Tools');
 App::uses('AbstractMigration', 'Migration');
 App::uses('MigrationManager', 'Migration');
@@ -604,13 +603,29 @@ class AdminShell extends AppShell
         if ($jobId === false) {
             return $this->error(__('Invalid retention job ID.'));
         }
-        $success = LogRetentionScheduledJob::run(
+        $report = function ($message, $progress) use ($jobId) {
+            $this->out($message);
+            $this->Job->saveProgress($jobId, $message, $progress);
+        };
+        $success = LogRetentionService::runAllConfigured(
             static function ($alias) {
                 return LogRetentionService::runConfigured(ClassRegistry::init($alias), APP . 'Config' . DS . 'config.php');
             },
-            function ($message, $progress) use ($jobId) {
-                $this->out($message);
-                $this->Job->saveProgress($jobId, $message, $progress);
+            static function ($category, $result, $progress) use ($report) {
+                if ($result === null) {
+                    $report("$category: starting configured retention", $progress);
+                    return;
+                }
+                $report(sprintf(
+                    '%s: status=%s days=%s cutoff=%s batches=%s deleted=%s duration=%.3f seconds reason=%s',
+                    $category, $result['status'], $result['days'], $result['cutoff'] ?? '-',
+                    $result['batches'], $result['affected'], $result['durationSeconds'], $result['reason'] ?? '-'
+                ), $progress);
+            },
+            static function ($category, $error, $progress) use ($report) {
+                foreach (LogRetentionService::describeFailure($error) as $message) {
+                    $report("$category: $message", $progress);
+                }
             }
         );
         $message = $success ? __('Configured log retention completed.') : __('Configured log retention incomplete; inspect job output. Committed batches are retained.');
