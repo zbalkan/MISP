@@ -50,6 +50,14 @@ query "INSERT INTO access_logs
 cake Log accessLogRetention 30 --dry-run
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent')")" = 2
 
+# Verify the actual Cake process exit status, not only shell method returns.
+cake Log retention --dry-run
+if MISP_SETTING_MISP__audit_log_retention_days=invalid cake Log retention --dry-run; then
+    echo 'Blocked configured retention unexpectedly returned success.' >&2
+    exit 1
+fi
+test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent')")" = 2
+
 # The running scheduler must observe the fresh configuration, provision the
 # native task, claim it, enqueue a real job and execute the configured sweep.
 cake Admin setSetting MISP.access_log_retention_days 30
