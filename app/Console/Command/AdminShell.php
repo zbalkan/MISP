@@ -4,6 +4,8 @@ App::uses('ProcessTool', 'Tools');
 App::uses('FileAccessTool', 'Tools');
 App::uses('JsonTool', 'Tools');
 App::uses('LogRetentionPolicy', 'Tools');
+App::uses('LogRetentionScheduledJob', 'Tools');
+App::uses('LogRetentionService', 'Tools');
 App::uses('AbstractMigration', 'Migration');
 App::uses('MigrationManager', 'Migration');
 App::uses('AbstractGrammar', 'Migration/Grammar');
@@ -53,6 +55,10 @@ class AdminShell extends AppShell
         $parser->addSubcommand('updateJSONLite', array(
             'help' => __('***TESTING ONLY*** Update the JSON definitions of MISP - but with a minimal set, only meant for testing.'),
         ));
+        $parser->addSubcommand('enforceLogRetention', [
+            'help' => __('Apply configured database log retention policies.'),
+            'parser' => ['arguments' => ['jobId' => ['help' => __('Background job ID')]]],
+        ]);
         $parser->addSubcommand('checkUserValidity', array(
             'help' => __('Report users that the external identity provider no longer backs. Schedulable as an Admin task.'),
         ));
@@ -591,9 +597,29 @@ class AdminShell extends AppShell
         }
     }
 
-    /**
-     * Report which users the identity provider no longer backs. Changes nothing.
-     */
+    /** Execute configured retention outside the scheduler polling process. */
+    public function enforceLogRetention()
+    {
+        $jobId = isset($this->args[0]) ? filter_var($this->args[0], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : null;
+        if ($jobId === false) {
+            return $this->error(__('Invalid retention job ID.'));
+        }
+        $success = LogRetentionScheduledJob::run(
+            static function ($alias) {
+                return LogRetentionService::runConfigured(ClassRegistry::init($alias), APP . 'Config' . DS . 'config.php');
+            },
+            function ($message, $progress) use ($jobId) {
+                $this->out($message);
+                $this->Job->saveProgress($jobId, $message, $progress);
+            }
+        );
+        $message = $success ? __('Configured log retention completed.') : __('Configured log retention incomplete; inspect job output. Committed batches are retained.');
+        $this->out($message);
+        $this->Job->saveStatus($jobId, $success, $message);
+        return $success;
+    }
+
+    /** Report which users the identity provider no longer backs. Changes nothing. */
     public function checkUserValidity()
     {
         $this->__runUserValidityCheck(false);

@@ -86,7 +86,7 @@ class BackgroundJob implements JsonSerializable
             $descriptorSpec,
             $pipes,
             null,
-            ['BACKGROUND_JOB_ID' => $this->id]
+            $this->processEnvironment()
         );
 
         $this->pool($process, $pipes, $runningCallback);
@@ -101,6 +101,25 @@ class BackgroundJob implements JsonSerializable
         } else {
             $this->setStatus(BackgroundJob::STATUS_FAILED);
         }
+    }
+
+    /**
+     * Retention must see raw environment overrides, including invalid or zero
+     * values. Preserve the existing isolated environment for other commands.
+     */
+    private function processEnvironment(): array
+    {
+        $environment = ['BACKGROUND_JOB_ID' => $this->id];
+        if ($this->command() === 'admin' && ($this->args()[0] ?? null) === 'enforceLogRetention') {
+            foreach (['audit_log_retention_days', 'access_log_retention_days', 'log_retention_days', 'log_retention_timezone'] as $setting) {
+                $name = 'MISP_SETTING_MISP__' . $setting;
+                $value = getenv($name);
+                if ($value !== false) {
+                    $environment[$name] = $value;
+                }
+            }
+        }
+        return $environment;
     }
 
     /**
