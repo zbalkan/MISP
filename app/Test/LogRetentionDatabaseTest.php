@@ -123,6 +123,53 @@ class LogRetentionDatabaseTest extends TestCase
         $this->assertSame([7], array_map('intval', $this->pdo->query("SELECT id FROM $jobs WHERE $condition")->fetchAll(PDO::FETCH_COLUMN)));
     }
 
+    public function testPolicyAndLockCheckBenchmark(): void
+    {
+        require_once __DIR__ . '/../Lib/Tools/LogRetentionPolicyReader.php';
+        $config = tempnam(sys_get_temp_dir(), 'retention-benchmark-');
+        $db = $this->adapter('AccessLog', 'access_logs');
+        $this->assertTrue($db->acquireLock());
+        try {
+            foreach ([false, true] as $databaseSettings) {
+                file_put_contents($config, '<?php $config = ' . var_export(['MISP' => [
+                    'system_setting_db' => $databaseSettings,
+                    'access_log_retention_days' => 30,
+                ]], true) . ';');
+                $checks = 200;
+                $policyReads = 0;
+                $databaseReads = 0;
+                $read = function ($setting) use ($db, &$databaseReads) {
+                    ++$databaseReads;
+                    return $db->readPolicySetting($setting);
+                };
+                $start = hrtime(true);
+                for ($i = 0; $i < $checks; ++$i) {
+                    $this->assertTrue($db->ownsLock());
+                }
+                $lockMs = (hrtime(true) - $start) / 1e6;
+                $start = hrtime(true);
+                for ($i = 0; $i < $checks; ++$i) {
+                    $this->assertSame(30, LogRetentionPolicyReader::read('access_log_retention_days', $config, $read));
+                    ++$policyReads;
+                }
+                $policyMs = (hrtime(true) - $start) / 1e6;
+                $this->assertSame($databaseSettings ? $checks : 0, $databaseReads);
+                fwrite(STDOUT, json_encode([
+                    'benchmark' => 'policy_and_lock_checks',
+                    'database_settings' => $databaseSettings,
+                    'lock_checks' => $checks,
+                    'policy_reads' => $policyReads,
+                    'database_policy_reads' => $databaseReads,
+                    'lock_ms' => $lockMs,
+                    'policy_ms' => $policyMs,
+                ], JSON_THROW_ON_ERROR) . PHP_EOL);
+            }
+        } finally {
+            $db->releaseLock();
+            unlink($config);
+        }
+    }
+
     public function testCheckpointPersistenceBenchmark(): void
     {
         $table = $this->table('access_logs');
