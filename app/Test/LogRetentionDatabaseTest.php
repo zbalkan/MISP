@@ -493,6 +493,42 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testAtomicBatchRollsBackWhenCheckpointWriteFails(): void
+    {
+        $table = $this->table('access_logs');
+        $settings = $this->table('admin_settings');
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2000-01-01'), (2, '2099-01-01')");
+        $db = $this->adapter('AccessLog', 'access_logs');
+        $cutoff = new DateTimeImmutable('2026-01-01T00:00:00Z');
+        $before = LogRetentionCheckpoint::encode(30, $cutoff, 0, 2);
+        $this->assertTrue($db->acquireLock());
+        try {
+            $db->saveCheckpoint($before);
+            $this->pdo->exec("ALTER TABLE $settings ADD CONSTRAINT retention_checkpoint_guard CHECK (value = " . $this->pdo->quote($before) . ")");
+            try {
+                try {
+                    $db->executeBatch(30, $cutoff, 0, 2);
+                    $this->fail('Expected checkpoint constraint violation.');
+                } catch (PDOException $e) {
+                    $this->assertSame('23000', (string)$e->getCode());
+                }
+                $this->assertFalse($this->pdo->inTransaction());
+                $observer = $this->connect();
+                $this->assertSame([1, 2], array_map('intval', $observer->query("SELECT id FROM $table ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
+                $this->assertSame($before, $observer->query("SELECT value FROM $settings")->fetchColumn());
+                $this->assertTrue($db->ownsLock());
+            } finally {
+                $this->pdo->exec("ALTER TABLE $settings DROP CONSTRAINT retention_checkpoint_guard");
+            }
+            $this->assertSame(['cursor' => 2, 'affected' => 1, 'complete' => true],
+                $db->executeBatch(30, $cutoff, 0, 2));
+            $this->assertSame([2], array_map('intval', $observer->query("SELECT id FROM $table ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
+            $this->assertSame(LogRetentionCheckpoint::encode(30, $cutoff, 2, 2), $observer->query("SELECT value FROM $settings")->fetchColumn());
+        } finally {
+            $db->releaseLock();
+        }
+    }
+
     public function testAtomicBatchPersistsDeletionAndCheckpoint(): void
     {
         $table = $this->table('access_logs');
