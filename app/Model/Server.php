@@ -2117,7 +2117,7 @@ class Server extends AppModel
             LogRetentionPolicy::parse($value);
             return true;
         } catch (InvalidArgumentException $e) {
-            return __($e->getMessage());
+            return __('Retention must be an integer between 0 and 36500 days.');
         }
     }
 
@@ -2127,7 +2127,7 @@ class Server extends AppModel
             LogRetentionPolicy::normaliseSetting(LogRetentionPolicy::TIMEZONE_SETTING, $value);
             return true;
         } catch (InvalidArgumentException $e) {
-            return __($e->getMessage());
+            return __('Specify a valid IANA log writer timezone or unconfigured.');
         }
     }
 
@@ -3023,7 +3023,14 @@ class Server extends AppModel
             try {
                 $value = LogRetentionPolicy::normaliseSetting($setting['name'], $value);
             } catch (InvalidArgumentException $e) {
-                return __($e->getMessage());
+                return $setting['name'] === LogRetentionPolicy::TIMEZONE_SETTING
+                    ? __('Specify a valid IANA log writer timezone or unconfigured.')
+                    : __('Retention must be an integer between 0 and 36500 days.');
+            }
+            try {
+                LogRetentionPolicy::validateCombination($setting['name'], $value, ['Configure', 'read']);
+            } catch (InvalidArgumentException $e) {
+                return __('Configure a valid log writer timezone before enabling audit or application log retention, and disable both policies before clearing it.');
             }
         }
         if (isset($setting['beforeHook'])) {
@@ -3108,6 +3115,7 @@ class Server extends AppModel
     {
         if (LogRetentionPolicy::isSetting($setting)) {
             $value = LogRetentionPolicy::normaliseSetting($setting, $value);
+            LogRetentionPolicy::validateCombination($setting, $value, ['Configure', 'read']);
         }
         if (!$fileOnly && Configure::read('MISP.system_setting_db')) {
             /** @var SystemSetting $systemSetting */
@@ -6797,7 +6805,7 @@ class Server extends AppModel
                 ),
                 'audit_log_retention_days' => [
                     'level' => self::SETTING_OPTIONAL,
-                    'description' => __('Audit log retention. Permanently deletes older database audit records when retention runs. Historical event changes may become unavailable. Whole calendar days (0 disables retention; maximum 36500). Saving this setting does not delete records. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
+                    'description' => __('Audit log retention. Permanently deletes older database audit records when retention runs. Historical event changes may become unavailable. Whole calendar days (0 disables retention; maximum 36500). Saving a positive value enables automatic deletion, which may begin shortly afterwards. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
                     'value' => 0,
                     'test' => 'testLogRetentionDays',
                     'type' => 'numeric',
@@ -6805,7 +6813,7 @@ class Server extends AppModel
                 ],
                 'access_log_retention_days' => [
                     'level' => self::SETTING_OPTIONAL,
-                    'description' => __('Access log retention. Permanently deletes older database access records when retention runs. Whole calendar days (0 disables retention; maximum 36500). Saving this setting does not delete records. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
+                    'description' => __('Access log retention. Permanently deletes older database access records when retention runs. Whole calendar days (0 disables retention; maximum 36500). Saving a positive value enables automatic deletion, which may begin shortly afterwards. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
                     'value' => 0,
                     'test' => 'testLogRetentionDays',
                     'type' => 'numeric',
@@ -6813,7 +6821,7 @@ class Server extends AppModel
                 ],
                 'log_retention_days' => [
                     'level' => self::SETTING_OPTIONAL,
-                    'description' => __('Application log retention. Permanently deletes older database application logs when retention runs. Historical event changes, recovery information, login trust information and statistics may become unavailable. Whole calendar days (0 disables retention; maximum 36500). Saving this setting does not delete records. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
+                    'description' => __('Application log retention. Permanently deletes older database application logs when retention runs. Historical event changes, recovery information, login trust information and statistics may become unavailable. Whole calendar days (0 disables retention; maximum 36500). Saving a positive value enables automatic deletion, which may begin shortly afterwards. Review legal and audit obligations and run a dry run before enabling. Deletion does not automatically reclaim disk space.'),
                     'value' => 0,
                     'test' => 'testLogRetentionDays',
                     'type' => 'numeric',
@@ -6821,7 +6829,7 @@ class Server extends AppModel
                 ],
                 'log_retention_timezone' => [
                     'level' => self::SETTING_OPTIONAL,
-                    'description' => __('IANA timezone used to write historical audit and application logs, for example UTC or Europe/Tallinn. Use unconfigured to prevent configured retention of these tables until the writer timezone is established. Access logs always use UTC. Changing this setting does not rewrite historical timestamps.'),
+                    'description' => __('IANA timezone used to write historical audit and application logs, for example UTC or Europe/Tallinn. Disable both audit and application log retention before setting this to unconfigured. Establish the writer timezone before enabling either policy. Access logs always use UTC. Changing this setting does not rewrite historical timestamps.'),
                     'value' => 'unconfigured',
                     'test' => 'testLogRetentionTimezone',
                     'type' => 'string',

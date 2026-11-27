@@ -37,6 +37,29 @@ final class LogRetentionPolicy
         return self::parse($value);
     }
 
+    /**
+     * Validate a proposed change against the current effective settings.
+     * Disabling a period is always allowed, including during recovery from
+     * an invalid configuration. Runtime checks remain authoritative when
+     * settings are changed externally or concurrently.
+     */
+    public static function validateCombination(string $name, $value, callable $read): void
+    {
+        $localSettings = ['MISP.audit_log_retention_days', 'MISP.log_retention_days'];
+        if (in_array($name, $localSettings, true) && $value > 0) {
+            $timezone = self::normaliseSetting(self::TIMEZONE_SETTING, $read(self::TIMEZONE_SETTING) ?? self::UNCONFIGURED_TIMEZONE);
+            if ($timezone === self::UNCONFIGURED_TIMEZONE) {
+                throw new InvalidArgumentException('Configure the log writer timezone before enabling audit or application log retention.');
+            }
+        } elseif ($name === self::TIMEZONE_SETTING && $value === self::UNCONFIGURED_TIMEZONE) {
+            foreach ($localSettings as $localSetting) {
+                if (self::parse($read($localSetting) ?? 0) > 0) {
+                    throw new InvalidArgumentException('Disable audit and application log retention before clearing the writer timezone.');
+                }
+            }
+        }
+    }
+
     public static function parse($value): int
     {
         if (is_string($value) && preg_match('/\A(?:0|[1-9][0-9]{0,4})\z/', $value)) {

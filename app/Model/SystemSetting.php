@@ -96,6 +96,7 @@ class SystemSetting extends AppModel
     {
         if (LogRetentionPolicy::isSetting($setting)) {
             $value = LogRetentionPolicy::normaliseSetting($setting, $value);
+            LogRetentionPolicy::validateCombination($setting, $value, ['Configure', 'read']);
         }
         $firstPart = explode('.', $setting)[0];
         if (!in_array($firstPart, self::ALLOWED_CATEGORIES, true) || in_array($setting, self::BLOCKED_SETTINGS, true)) {

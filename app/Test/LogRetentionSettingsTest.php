@@ -8,6 +8,18 @@ require_once __DIR__ . '/../Lib/Tools/LogRetentionPolicy.php';
 
 class LogRetentionSettingsTest extends TestCase
 {
+    public function testCombinationAllowsIndependentAccessAndRecovery(): void
+    {
+        $settings = ['MISP.audit_log_retention_days' => 30, 'MISP.log_retention_timezone' => 'invalid'];
+        $read = static function ($name) use (&$settings) { return $settings[$name] ?? null; };
+        LogRetentionPolicy::validateCombination('MISP.access_log_retention_days', 30, $read);
+        LogRetentionPolicy::validateCombination('MISP.audit_log_retention_days', 0, $read);
+        LogRetentionPolicy::validateCombination(LogRetentionPolicy::TIMEZONE_SETTING, 'UTC', $read);
+        $this->expectException(InvalidArgumentException::class);
+        LogRetentionPolicy::validateCombination('MISP.log_retention_days', 30, $read);
+    }
+
+
     /**
      * @runInSeparateProcess
      * @preserveGlobalState disabled
@@ -99,9 +111,22 @@ class LogRetentionSettingsTest extends TestCase
             }
             $this->assertSame([], $shell->Server->saved);
             $shell->args = [$name, '365'];
+            try {
+                $shell->setSetting();
+                $this->fail('Expected missing writer timezone to reject activation even with force.');
+            } catch (RuntimeException $e) {
+                $this->assertStringContainsString('writer timezone', $e->getMessage());
+            }
+            $this->assertSame([], $shell->Server->saved);
+            RetentionSettingsConfigure::$settings[LogRetentionPolicy::TIMEZONE_SETTING] = 'UTC';
             $shell->setSetting();
             $this->assertSame([$name => 365], $shell->Server->saved);
             $this->assertCount(1, $shell->Server->audit);
+            RetentionSettingsConfigure::$settings[$name] = 365;
+            $this->assertIsString($shell->Server->serverSettingsEditValue('SYSTEM', ['name' => LogRetentionPolicy::TIMEZONE_SETTING], 'unconfigured', true, true));
+            $this->assertSame([$name => 365], $shell->Server->saved);
+            // Recovery must permit disabling a period even with an invalid timezone.
+            RetentionSettingsConfigure::$settings[LogRetentionPolicy::TIMEZONE_SETTING] = 'invalid';
             $shell->args = [$name, '0'];
             $shell->setSetting();
             $this->assertSame([$name => 0], $shell->Server->saved);
@@ -135,5 +160,6 @@ class RetentionSettingsShell
 
 class RetentionSettingsConfigure
 {
-    public static function read($key) { return null; }
+    public static $settings = [];
+    public static function read($key) { return self::$settings[$key] ?? null; }
 }
