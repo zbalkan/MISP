@@ -83,9 +83,9 @@ class TasksController extends AppController
         ];
     }
 
-    private function __assertNotManagedRetention($id): void
+    private function __assertNotManagedRetention($id, ?array $task = null): void
     {
-        $task = $this->Task->find('first', [
+        $task = $task ?? $this->Task->find('first', [
             'conditions' => ['Task.id' => $id],
             'recursive' => -1,
         ]);
@@ -99,12 +99,12 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
-        $this->__assertNotManagedRetention($id);
 
         $task = $this->Task->find('first', array(
             'recursive' => -1,
             'conditions' => array('Task.id' => $id)
         ));
+        $this->__assertNotManagedRetention($id, $task ?: []);
         if (empty($task)) {
             return $this->RestResponse->saveFailResponse('Task', 'toggleEnabled', $id, 'Invalid Task', $this->response->type());
         }
@@ -360,13 +360,13 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
-        $this->__assertNotManagedRetention($id);
 
         $task = $this->Task->find('first', array(
             'recursive' => -1,
             'conditions' => array('Task.id' => $id)
         ));
 
+        $this->__assertNotManagedRetention($id, $task ?: []);
         if (empty($task)) {
             if ($this->IndexFilter->isRest()) {
                 return $this->RestResponse->saveFailResponse('Task', 'forceRunTask', $id, __('Invalid Task'), $this->response->type());
