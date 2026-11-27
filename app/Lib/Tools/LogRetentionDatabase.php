@@ -26,14 +26,19 @@ final class LogRetentionDatabase
     private $settingsTable;
     private $checkpointKey;
     private $locked = false;
+    private $provisioning;
     private $unusable = false;
 
     /**
      * Local-time log tables require the established writer timezone, not the
      * timezone of the CLI process. AccessLog timestamps are always UTC.
      */
-    public function __construct($model, ?DateTimeZone $logTimezone = null)
+    public function __construct($model, ?DateTimeZone $logTimezone = null, bool $provisioning = false)
     {
+        $this->provisioning = $provisioning;
+        if ($provisioning && $model->alias !== 'AccessLog') {
+            throw new InvalidArgumentException('Provisioning lock requires the AccessLog datasource.');
+        }
         $tables = ['AuditLog' => 'audit_logs', 'AccessLog' => 'access_logs', 'Log' => 'logs'];
         if (!isset($tables[$model->alias]) || $model->table !== $tables[$model->alias]) {
             throw new InvalidArgumentException('Unsupported retention model.');
@@ -82,7 +87,8 @@ final class LogRetentionDatabase
                 }
             }
         }
-        $this->lockName = 'misp:retention:' . substr(hash('sha256', $database . ':' . $db->fullTableName($model, false, false)), 0, 48);
+        $scope = $provisioning ? ':provisioning' : '';
+        $this->lockName = 'misp:retention:' . substr(hash('sha256', $database . ':' . $db->fullTableName($model, false, false) . $scope), 0, 48);
         if ($this->driver === 'pgsql') {
             // Advisory locks are database-local. Use the relation OID to
             // identify the same table even through different search paths.
@@ -90,7 +96,7 @@ final class LogRetentionDatabase
             if ($oid === null || $oid === false) {
                 throw new RuntimeException('Retention table is unavailable.');
             }
-            $this->pgLockOids = array_values(unpack('N2', hash('sha256', 'misp:retention:' . $oid, true)));
+            $this->pgLockOids = array_values(unpack('N2', hash('sha256', 'misp:retention:' . $oid . $scope, true)));
             $this->pgLockKeys = array_map(static function ($value) {
                 return $value > 2147483647 ? $value - 4294967296 : $value;
             }, $this->pgLockOids);
@@ -216,6 +222,9 @@ final class LogRetentionDatabase
 
     public function loadCheckpoint(): ?string
     {
+        if ($this->provisioning) {
+            throw new LogicException('Provisioning lock cannot authorise retention operations.');
+        }
         if (!$this->ownsLock()) {
             throw new RuntimeException('Retention checkpoint requires an owned database lock.');
         }
@@ -224,6 +233,9 @@ final class LogRetentionDatabase
 
     public function saveCheckpoint(string $value): void
     {
+        if ($this->provisioning) {
+            throw new LogicException('Provisioning lock cannot authorise retention operations.');
+        }
         if (!$this->ownsLock() || $this->connection->inTransaction()) {
             throw new RuntimeException('Retention checkpoint requires an owned lock and no active transaction.');
         }
@@ -276,6 +288,9 @@ final class LogRetentionDatabase
 
     public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun): int
     {
+        if ($this->provisioning) {
+            throw new LogicException('Provisioning lock cannot authorise retention operations.');
+        }
         if ($first < 1 || $last < $first || $last - $first >= LogRetentionSweep::MAX_BATCH_SIZE) {
             throw new InvalidArgumentException('Invalid retention batch bounds.');
         }
