@@ -91,6 +91,35 @@ class LogRetentionPostgresTest extends TestCase
         }
     }
 
+    public function testAtomicBatchPersistsDeletionAndCheckpoint(): void
+    {
+        $table = $this->table('access_logs');
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2000-01-01'), (2, '2099-01-01'), (20001, '2000-01-01')");
+        $db = new LogRetentionDatabase($this->model('AccessLog', 'access_logs'), new DateTimeZone('UTC'));
+        $cutoff = new DateTimeImmutable('2026-01-01T00:00:00Z');
+        $this->assertTrue($db->acquireLock());
+        try {
+            $this->assertSame(['cursor' => 10000, 'affected' => 1, 'complete' => false],
+                $db->executeBatch(30, $cutoff, 0, 20001));
+            $this->assertSame(LogRetentionCheckpoint::encode(30, $cutoff, 10000, 20001), $db->loadCheckpoint());
+            $this->assertSame([2, 20001], array_map('intval', $this->pdo->query("SELECT id FROM $table ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
+        } finally {
+            $db->releaseLock();
+        }
+        $db = new LogRetentionDatabase($this->model('AccessLog', 'access_logs', $this->connect()), new DateTimeZone('UTC'));
+        $this->assertTrue($db->acquireLock());
+        try {
+            $state = LogRetentionCheckpoint::resume($db->loadCheckpoint(), 30, $cutoff, 20001);
+            $this->assertNotNull($state);
+            $this->assertSame(['cursor' => 20001, 'affected' => 1, 'complete' => true],
+                $db->executeBatch(30, $state['cutoff'], $state['cursor'], $state['highWaterMark']));
+            $this->assertSame(LogRetentionCheckpoint::encode(30, $cutoff, 20001, 20001), $db->loadCheckpoint());
+            $this->assertSame([2], array_map('intval', $this->pdo->query("SELECT id FROM $table ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
+        } finally {
+            $db->releaseLock();
+        }
+    }
+
     public function testTransactionalInternalStateAndDeletion(): void
     {
         $dialect = $this->model('AccessLog', 'access_logs')->getSqlDialect();
