@@ -12,7 +12,8 @@ class LogRetentionTopologyTest extends TestCase
     {
         LogRetentionTopology::assertSupported([]);
         LogRetentionTopology::assertSupported(['wsrep_on' => 'OFF', 'wsrep_provider' => 'none']);
-        $this->addToAssertionCount(2);
+        LogRetentionTopology::assertSupported(['group_replication_group_name' => '']);
+        $this->addToAssertionCount(3);
     }
 
     public function testKnownClusterConfigurationsAreRejected(): void
@@ -20,7 +21,7 @@ class LogRetentionTopologyTest extends TestCase
         foreach ([
             ['wsrep_on' => 'ON', 'wsrep_provider' => 'none'],
             ['wsrep_on' => 'OFF', 'wsrep_provider' => '/usr/lib/galera/libgalera_smm.so'],
-            ['group_replication_group_name' => ''],
+            ['group_replication_group_name' => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'],
             ['WSREP_ON' => 'ON'],
         ] as $variables) {
             try {
