@@ -98,7 +98,7 @@ final class LogRetentionService
                 $database = new LogRetentionDatabase($model, new DateTimeZone($configuredTimezone));
             }
         }
-        $cutoff = $legacyCutoff ?? LogRetentionPolicy::cutoff($days, new DateTimeImmutable('now', $database->storageTimezone()));
+        $cutoff = $legacyCutoff ?? LogRetentionPolicy::cutoff($days, (new SystemClock())->now()->setTimezone($database->storageTimezone()));
         $result = (new LogRetentionRunner())->runFixedCutoffResult($database, $cutoff, $dryRun);
         $result['days'] = $days;
         return self::formatCutoff($database, $result);

@@ -6,6 +6,7 @@ require_once __DIR__ . '/LogRetentionPolicy.php';
 require_once __DIR__ . '/LogRetentionCheckpoint.php';
 require_once __DIR__ . '/LogRetentionSweep.php';
 require_once __DIR__ . '/LogRetentionCleanupException.php';
+require_once __DIR__ . '/SystemClock.php';
 
 /**
  * Orchestrates a single table sweep. The policy reader must read current
@@ -16,6 +17,13 @@ require_once __DIR__ . '/LogRetentionCleanupException.php';
  */
 final class LogRetentionRunner
 {
+    private \Psr\Clock\ClockInterface $clock;
+
+    public function __construct(?\Psr\Clock\ClockInterface $clock = null)
+    {
+        $this->clock = $clock ?? new SystemClock();
+    }
+
     public function run($database, callable $readPolicy, bool $dryRun = false, int $runtimeSeconds = 1800, int $delayMicroseconds = 200000, bool $persistCheckpoint = true): array
     {
         if ($runtimeSeconds <= 0 || $delayMicroseconds < 0) {
@@ -31,7 +39,7 @@ final class LogRetentionRunner
         }
         return $this->withOwnedLock($database, function () use ($database, $readPolicy, $days, $dryRun, $runtimeSeconds, $delayMicroseconds, $persistCheckpoint, $started) {
             $timezone = $database->storageTimezone();
-            $cutoff = LogRetentionPolicy::cutoff($days, new DateTimeImmutable('now', $timezone));
+            $cutoff = LogRetentionPolicy::cutoff($days, $this->clock->now()->setTimezone($timezone));
             $high = $database->highWaterMark();
             $state = $dryRun || !$persistCheckpoint ? null : LogRetentionCheckpoint::resume($database->loadCheckpoint(), $days, $cutoff, $high);
             $cursor = $state['cursor'] ?? 0;
@@ -46,7 +54,7 @@ final class LogRetentionRunner
                     $reason = 'policy_changed';
                     return false;
                 }
-                if (LogRetentionPolicy::cutoff($days, new DateTimeImmutable('now', $timezone)) < $cutoff) {
+                if (LogRetentionPolicy::cutoff($days, $this->clock->now()->setTimezone($timezone)) < $cutoff) {
                     $reason = 'clock_changed';
                     return false;
                 }
@@ -99,7 +107,7 @@ final class LogRetentionRunner
     public function runFixedCutoffResult($database, DateTimeImmutable $cutoff, bool $dryRun = false): array
     {
         $started = hrtime(true);
-        if ($cutoff > new DateTimeImmutable()) {
+        if ($cutoff > $this->clock->now()) {
             throw new InvalidArgumentException('Retention cutoff must not be in the future.');
         }
         if (!$database->acquireLock()) {
@@ -120,11 +128,11 @@ final class LogRetentionRunner
                 },
                 [$database, 'processBatch'],
                 static function () {},
-                static function () use ($database, $cutoff) {
+                function () use ($database, $cutoff) {
                     if (!$database->ownsLock()) {
                         throw new RuntimeException('Retention lock lost.');
                     }
-                    if ($cutoff > new DateTimeImmutable()) {
+                    if ($cutoff > $this->clock->now()) {
                         throw new RuntimeException('System clock moved before the retention cutoff.');
                     }
                     return true;

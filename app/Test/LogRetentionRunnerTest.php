@@ -21,6 +21,31 @@ class LogRetentionRunnerTest extends TestCase
         $this->assertFalse($database->locked);
     }
 
+    public function testInjectedClockStopsSweepOnBackwardTimeChange(): void
+    {
+        $database = new RetentionRunnerTestDatabase();
+        $clock = new RetentionTestClock(new DateTimeImmutable('2026-03-01T12:00:00Z'));
+        $result = (new LogRetentionRunner($clock))->run($database, static function () use ($database, $clock) {
+            if ($database->batches > 0) {
+                $clock->instant = new DateTimeImmutable('2026-02-28T12:00:00Z');
+            }
+            return 30;
+        }, false, 1800, 0);
+        $this->assertSame('partial', $result['status']);
+        $this->assertSame('clock_changed', $result['reason']);
+        $this->assertSame('2026-01-30T12:00:00+00:00', $result['cutoff']->format(DATE_ATOM));
+        $this->assertSame(1, $database->batches);
+        $this->assertFalse($database->locked);
+    }
+
+    public function testInjectedClockRejectsFutureExplicitCutoff(): void
+    {
+        $database = new RetentionRunnerTestDatabase();
+        $clock = new RetentionTestClock(new DateTimeImmutable('2026-01-01T00:00:00Z'));
+        $this->expectException(InvalidArgumentException::class);
+        (new LogRetentionRunner($clock))->runFixedCutoffResult($database, new DateTimeImmutable('2026-01-02T00:00:00Z'));
+    }
+
     public function testDisabledDoesNotAcquireLock(): void
     {
         $database = new RetentionRunnerTestDatabase();
@@ -135,4 +160,11 @@ class RetentionRunnerTestDatabase
         ++$this->batches;
         return 1;
     }
+}
+
+class RetentionTestClock implements \Psr\Clock\ClockInterface
+{
+    public DateTimeImmutable $instant;
+    public function __construct(DateTimeImmutable $instant) { $this->instant = $instant; }
+    public function now(): DateTimeImmutable { return $this->instant; }
 }
