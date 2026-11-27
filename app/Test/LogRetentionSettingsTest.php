@@ -66,6 +66,8 @@ class LogRetentionSettingsTest extends TestCase
         require_once __DIR__ . '/../Console/Command/AdminShell.php';
         $shell = new AdminShell();
         $shell->Server = new class extends Server {
+            public function __construct() {}
+
             public $saved = [];
             public $audit = [];
             public function getSettingData($settingName, $withOptions = true)
