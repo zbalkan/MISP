@@ -628,6 +628,73 @@ class LogRetentionDatabaseTest extends TestCase
         $this->fail('Database did not release the disconnected session lock within five seconds.');
     }
 
+    public function testCommitExceptionDoesNotAdvanceCheckpoint(): void
+    {
+        foreach ([false, true] as $committed) {
+            $table = $this->table('access_logs');
+            $this->pdo->exec("DELETE FROM $table");
+            $this->pdo->exec("DELETE FROM " . $this->table('admin_settings'));
+            $this->seed('access_logs');
+            $worker = new class(getenv('MISP_RETENTION_TEST_DSN'), getenv('MISP_RETENTION_TEST_USER') ?: '', getenv('MISP_RETENTION_TEST_PASSWORD') ?: '', [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_PERSISTENT => false,
+            ]) extends PDO {
+                public bool $commitBeforeException = false;
+                public function commit(): bool
+                {
+                    if ($this->commitBeforeException) {
+                        parent::commit();
+                    }
+                    throw new PDOException('Injected commit acknowledgement failure.');
+                }
+            };
+            $worker->commitBeforeException = $committed;
+            $db = $this->adapter('AccessLog', 'access_logs', $worker);
+            $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+            $this->assertTrue($db->acquireLock());
+            $high = $db->highWaterMark();
+            $checkpoint = LogRetentionCheckpoint::encode(30, $cutoff, 0, $high);
+            try {
+                $db->saveCheckpoint($checkpoint);
+                try {
+                    (new LogRetentionSweep())->run(
+                        0, $high, $cutoff, [$db, 'nextId'], [$db, 'processBatch'],
+                        function ($cursor) use ($db, $cutoff, $high) {
+                            $db->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, $cursor, $high));
+                        },
+                        static function () { return true; }
+                    );
+                    $this->fail('Expected injected commit exception.');
+                } catch (PDOException $e) {
+                    $this->assertSame('Injected commit acknowledgement failure.', $e->getMessage());
+                }
+                $this->assertFalse($worker->inTransaction());
+                $this->assertSame($checkpoint, $db->loadCheckpoint());
+                $this->assertSame($committed ? [2, 30000, 30001] : [1, 2, 10000, 30000, 30001], $this->ids('access_logs'));
+            } finally {
+                $db->releaseLock();
+            }
+            $recovery = $this->adapter('AccessLog', 'access_logs', $this->connect());
+            $this->assertTrue($recovery->acquireLock());
+            try {
+                $state = LogRetentionCheckpoint::resume($recovery->loadCheckpoint(), 30, $cutoff, $high);
+                $result = (new LogRetentionSweep())->run(
+                    $state['cursor'], $high, $cutoff, [$recovery, 'nextId'], [$recovery, 'processBatch'],
+                    function ($cursor) use ($recovery, $cutoff, $high) {
+                        $recovery->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, $cursor, $high));
+                    },
+                    static function () { return true; }
+                );
+                $this->assertTrue($result['complete']);
+                $this->assertSame($committed ? 1 : 3, $result['affected']);
+                $this->assertSame([2, 30001], $this->ids('access_logs'));
+                $this->assertSame(LogRetentionCheckpoint::encode(30, $cutoff, $high, $high), $recovery->loadCheckpoint());
+            } finally {
+                $recovery->releaseLock();
+            }
+        }
+    }
+
     public function testTerminatedSessionRollsBackUncommittedDeletion(): void
     {
         $table = $this->table('access_logs');
