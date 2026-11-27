@@ -40,15 +40,6 @@ class AccessLog extends AppModel
         ],
     ];
 
-    /**
-     * Execute one bounded retention sweep. The caller supplies a fresh policy
-     * reader and, for local timestamps, the established writer timezone.
-     */
-    public function runLogRetention(callable $readPolicy, bool $dryRun = false, ?DateTimeZone $logTimezone = null, bool $persistCheckpoint = true): array
-    {
-        return LogRetentionService::run($this, $readPolicy, $dryRun, $logTimezone, $persistCheckpoint);
-    }
-
     public function afterFind($results, $primary = false)
     {
         foreach ($results as &$result) {

@@ -396,7 +396,7 @@ class LogRetentionDatabaseTest extends TestCase
      * @runInSeparateProcess
      * @preserveGlobalState disabled
      */
-    public function testActualLogModelEntryPointsUseSharedRetentionEngine(): void
+    public function testExplicitRetentionOnActualLogModelsPreservesLegacyContract(): void
     {
         if (!class_exists('App', false)) {
             class_alias(RetentionModelTestApp::class, 'App');
@@ -413,12 +413,11 @@ class LogRetentionDatabaseTest extends TestCase
             $model->retentionDatasource = new RetentionDatabaseTestModel($alias, $table, $this->pdo, $this->prefix);
             $this->pdo->exec("INSERT INTO " . $this->table($table) . " (id, created) VALUES
                 (1, '2000-01-01 00:00:00'), (2, '2099-01-01 00:00:00')");
-            $reader = static function ($database) { return 30; };
-            $dry = $model->runLogRetention($reader, true, new DateTimeZone('UTC'), false);
+            $dry = LogRetentionService::runExplicit($model, 30, true, new DateTimeZone('UTC'));
             $this->assertSame('complete', $dry['status']);
             $this->assertSame(1, $dry['affected']);
             $this->assertSame([1, 2], $this->ids($table));
-            $result = $model->runLogRetention($reader, false, new DateTimeZone('UTC'), false);
+            $result = LogRetentionService::runExplicit($model, 30, false, new DateTimeZone('UTC'));
             $this->assertSame('complete', $result['status']);
             $this->assertSame(1, $result['affected']);
             $this->assertSame([2], $this->ids($table));
@@ -634,7 +633,7 @@ class RetentionDatabaseTestModel
     }
 }
 
-/** Isolated CakePHP boundary stubs; the three log model methods are real. */
+/** Isolated CakePHP boundary stubs; the log model classes are real. */
 class RetentionModelTestApp
 {
     public static function uses($class, $package) {}

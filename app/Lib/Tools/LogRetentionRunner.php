@@ -25,7 +25,7 @@ final class LogRetentionRunner
         $this->clock = $clock ?? new SystemClock();
     }
 
-    public function run($database, callable $readPolicy, bool $dryRun = false, int $runtimeSeconds = 1800, int $delayMicroseconds = 200000, bool $persistCheckpoint = true): array
+    public function run($database, callable $readPolicy, bool $dryRun = false, int $runtimeSeconds = 1800, int $delayMicroseconds = 200000): array
     {
         if ($runtimeSeconds <= 0 || $delayMicroseconds < 0) {
             throw new InvalidArgumentException('Invalid retention execution limits.');
@@ -38,11 +38,11 @@ final class LogRetentionRunner
         if (!$database->acquireLock()) {
             return ['status' => 'busy', 'reason' => 'busy', 'complete' => false, 'affected' => 0, 'batches' => 0, 'days' => $days, 'cutoff' => null, 'durationSeconds' => (hrtime(true) - $started) / 1e9, 'dryRun' => $dryRun];
         }
-        return $this->withOwnedLock($database, function () use ($database, $readPolicy, $days, $dryRun, $runtimeSeconds, $delayMicroseconds, $persistCheckpoint, $started) {
+        return $this->withOwnedLock($database, function () use ($database, $readPolicy, $days, $dryRun, $runtimeSeconds, $delayMicroseconds, $started) {
             $timezone = $database->storageTimezone();
             $cutoff = LogRetentionPolicy::cutoff($days, $this->clock->now()->setTimezone($timezone));
             $high = $database->highWaterMark();
-            $state = $dryRun || !$persistCheckpoint ? null : LogRetentionCheckpoint::resume($database->loadCheckpoint(), $days, $cutoff, $high);
+            $state = $dryRun ? null : LogRetentionCheckpoint::resume($database->loadCheckpoint(), $days, $cutoff, $high);
             $cursor = $state['cursor'] ?? 0;
             $high = $state['highWaterMark'] ?? $high;
             $cutoff = $state['cutoff'] ?? $cutoff;
@@ -86,10 +86,8 @@ final class LogRetentionRunner
                     return $database->nextId($cursor, $high);
                 },
                 [$database, 'processBatch'],
-                function ($cursor) use ($database, $days, $cutoff, $high, $persistCheckpoint) {
-                    if ($persistCheckpoint) {
-                        $database->saveCheckpoint(LogRetentionCheckpoint::encode($days, $cutoff, $cursor, $high));
-                    }
+                function ($cursor) use ($database, $days, $cutoff, $high) {
+                    $database->saveCheckpoint(LogRetentionCheckpoint::encode($days, $cutoff, $cursor, $high));
                 },
                 $canContinue,
                 $dryRun
