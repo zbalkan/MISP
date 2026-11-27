@@ -363,11 +363,6 @@ jobs:
           sudo python3 -m supervisor.supervisorctl -c /etc/supervisord.conf start all
           sudo python3 -m supervisor.supervisorctl -c /etc/supervisord.conf status
 
-      - name: Verify native log retention scheduler and worker
-        env:
-          MISP_RETENTION_CI: '1'
-        run: bash tests/test_log_retention_scheduler.sh
-
       - name: Update JSON
         run: app/Console/cake Admin updateJSON
 
@@ -379,6 +374,11 @@ jobs:
           sudo systemctl status apache2 --no-pager -l
           sudo apache2ctl -S
           curl -sS http://${HOST}
+
+      - name: Verify native log retention scheduler and worker
+        env:
+          MISP_RETENTION_CI: '1'
+        run: bash tests/test_log_retention_scheduler.sh
 
       - name: Check if dependencies working as expected
         run: |

@@ -70,3 +70,21 @@ test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-old'
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-recent'")" = 1
 test "$(query "SELECT COUNT(*) FROM admin_settings WHERE setting = 'log_retention_checkpoint_access_logs'")" = 1
 echo 'Native scheduler, job association, worker, checkpoint and retention cutoff verified.'
+
+# The live application must protect the managed task and its dispatch guard,
+# while allowing an older completed retention job to be removed normally.
+task_id=$(query "SELECT id FROM scheduled_tasks WHERE $task_where")
+job_id=$(query "SELECT last_job_id FROM scheduled_tasks WHERE $task_where")
+test -n "$task_id"
+test -n "$job_id"
+http_status=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: $AUTH" -H 'Accept: application/json' -H 'Content-Type: application/json' -X POST "http://$HOST/tasks/forceRun/$task_id")
+test "$http_status" = 405
+query "INSERT INTO jobs (worker, job_type, job_input, status, message, progress, org_id, date_created, date_modified)
+    VALUES ('default', 'admin_action', 'enforceLogRetention', 4, 'retention CI historical job', 100, 0, NOW(), NOW())"
+historical_id=$(query "SELECT id FROM jobs WHERE $job_where AND message = 'retention CI historical job'")
+test -n "$historical_id"
+curl -sS --fail-with-body -o /dev/null -H "Authorization: $AUTH" -H 'Accept: application/json' -H 'Content-Type: application/json' --data "{\"Job\":{\"id\":[$job_id,$historical_id]}}" "http://$HOST/jobs/deleteSelection"
+test "$(query "SELECT COUNT(*) FROM jobs WHERE id = $job_id")" = 1
+test "$(query "SELECT COUNT(*) FROM jobs WHERE id = $historical_id")" = 0
+test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE id = $task_id AND last_job_id = $job_id")" = 1
+echo 'Managed task and current job protected through the live administration API.'
