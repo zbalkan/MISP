@@ -274,6 +274,29 @@ class LogRetentionDatabaseTest extends TestCase
         $db->processBatch(1, LogRetentionSweep::MAX_BATCH_SIZE + 1, $cutoff, true);
     }
 
+    public function testLostLockCannotReleaseAnotherSessionLockOrBeReused(): void
+    {
+        $a = $this->adapter('Log', 'logs');
+        $b = $this->adapter('Log', 'logs', $this->connect());
+        $this->assertTrue($a->acquireLock());
+        $this->pdo->query('SELECT RELEASE_ALL_LOCKS()')->closeCursor();
+        $this->assertTrue($b->acquireLock());
+        try {
+            $this->assertFalse($a->ownsLock());
+            try {
+                $a->releaseLock();
+                $this->fail('Expected release failure.');
+            } catch (RuntimeException $e) {
+                $this->assertSame('Could not release retention lock.', $e->getMessage());
+            }
+            $this->assertTrue($b->ownsLock());
+            $this->expectExceptionMessage('Retention requires a usable session');
+            $a->acquireLock();
+        } finally {
+            $b->releaseLock();
+        }
+    }
+
     public function testDeletionWithoutLockIsRejected(): void
     {
         $this->seed('logs');

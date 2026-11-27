@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/LogRetentionSweep.php';
+require_once __DIR__ . '/LogRetentionCleanupException.php';
 
 /**
  * Database operations for the three supported log tables.
@@ -18,6 +19,7 @@ final class LogRetentionDatabase
     private $settingsTable;
     private $checkpointKey;
     private $locked = false;
+    private $unusable = false;
 
     /**
      * Local-time log tables require the established writer timezone, not the
@@ -42,6 +44,9 @@ final class LogRetentionDatabase
         if ($this->connection->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
             throw new RuntimeException('Retention locking is currently supported only on MySQL and MariaDB.');
         }
+        if ((int)$this->connection->getAttribute(PDO::ATTR_ERRMODE) !== PDO::ERRMODE_EXCEPTION) {
+            throw new RuntimeException('Retention requires PDO exception mode.');
+        }
         if ($this->connection->getAttribute(PDO::ATTR_PERSISTENT)) {
             throw new RuntimeException('Retention requires a non-persistent database session.');
         }
@@ -57,6 +62,9 @@ final class LogRetentionDatabase
 
     public function acquireLock(): bool
     {
+        if ($this->unusable || $this->connection->inTransaction()) {
+            throw new RuntimeException('Retention requires a usable session with no active transaction.');
+        }
         if ($this->locked) {
             throw new LogicException('Retention lock already acquired.');
         }
@@ -78,7 +86,7 @@ final class LogRetentionDatabase
 
     public function ownsLock(): bool
     {
-        if (!$this->locked) {
+        if (!$this->locked || $this->unusable) {
             return false;
         }
         $result = $this->scalar('SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName]);
@@ -90,10 +98,19 @@ final class LogRetentionDatabase
         if (!$this->locked) {
             return;
         }
-        $this->locked = false;
-        $result = $this->scalar('SELECT RELEASE_LOCK(?)', [$this->lockName]);
-        if ($result !== 1 && $result !== '1') {
-            throw new RuntimeException('Could not release retention lock.');
+        try {
+            if ($this->unusable || $this->connection->inTransaction()) {
+                throw new RuntimeException('Retention session must be closed after an uncertain transaction outcome.');
+            }
+            $result = $this->scalar('SELECT RELEASE_LOCK(?)', [$this->lockName]);
+            if ($result !== 1 && $result !== '1') {
+                throw new RuntimeException('Could not release retention lock.');
+            }
+            $this->locked = false;
+        } catch (Throwable $e) {
+            // Do not reuse a session whose cleanup outcome is uncertain.
+            $this->unusable = true;
+            throw $e;
         }
     }
 
@@ -171,6 +188,9 @@ final class LogRetentionDatabase
         }
         $where = " WHERE id >= ? AND id <= ? AND created < ?";
         $params = [$first, $last, $this->storageCutoff($cutoff)];
+        if ($this->unusable) {
+            throw new RuntimeException('Retention session is unusable.');
+        }
         if ($dryRun) {
             return (int)$this->scalar("SELECT COUNT(*) FROM {$this->table}" . $where, $params);
         }
@@ -195,8 +215,13 @@ final class LogRetentionDatabase
             }
             return $count;
         } catch (Throwable $e) {
-            if ($this->connection->inTransaction()) {
-                $this->connection->rollBack();
+            try {
+                if ($this->connection->inTransaction() && !$this->connection->rollBack()) {
+                    throw new RuntimeException('Could not roll back retention transaction.');
+                }
+            } catch (Throwable $cleanupFailure) {
+                $this->unusable = true;
+                throw new LogRetentionCleanupException($e, $cleanupFailure);
             }
             throw $e;
         }

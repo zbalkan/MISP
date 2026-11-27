@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/LogRetentionPolicy.php';
 require_once __DIR__ . '/LogRetentionCheckpoint.php';
 require_once __DIR__ . '/LogRetentionSweep.php';
+require_once __DIR__ . '/LogRetentionCleanupException.php';
 
 /**
  * Orchestrates a single table sweep. The policy reader must read current
@@ -24,6 +25,7 @@ final class LogRetentionRunner
         if (!$database->acquireLock()) {
             return ['status' => 'busy', 'affected' => 0, 'dryRun' => $dryRun];
         }
+        $failure = null;
         try {
             $started = hrtime(true);
             $timezone = $database->storageTimezone();
@@ -74,8 +76,18 @@ final class LogRetentionRunner
             $result['status'] = $result['complete'] ? 'complete' : 'partial';
             $result['reason'] = $reason;
             return $result;
+        } catch (Throwable $e) {
+            $failure = $e;
+            throw $e;
         } finally {
-            $database->releaseLock();
+            try {
+                $database->releaseLock();
+            } catch (Throwable $cleanupFailure) {
+                if ($failure !== null) {
+                    throw new LogRetentionCleanupException($failure, $cleanupFailure);
+                }
+                throw $cleanupFailure;
+            }
         }
     }
 }
