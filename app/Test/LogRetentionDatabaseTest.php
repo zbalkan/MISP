@@ -628,6 +628,52 @@ class LogRetentionDatabaseTest extends TestCase
         $this->fail('Database did not release the disconnected session lock within five seconds.');
     }
 
+    public function testTerminatedSessionRollsBackUncommittedDeletion(): void
+    {
+        $table = $this->table('access_logs');
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2025-01-01'), (2, '2026-01-01'), (10001, '2025-01-01')");
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $worker = $this->connect();
+        $id = (int)$worker->query('SELECT CONNECTION_ID()')->fetchColumn();
+        $db = $this->adapter('AccessLog', 'access_logs', $worker);
+        $this->assertTrue($db->acquireLock());
+        $high = $db->highWaterMark();
+        $checkpoint = LogRetentionCheckpoint::encode(30, $cutoff, 0, $high);
+        $db->saveCheckpoint($checkpoint);
+        // Hold the deletion transaction open to reproduce interruption before commit.
+        $worker->beginTransaction();
+        $this->assertSame(1, $worker->exec("DELETE FROM $table WHERE id BETWEEN 1 AND 10000 AND created < '2026-01-01'"));
+        $this->pdo->exec("KILL CONNECTION $id");
+        unset($db, $worker);
+        $recovery = $this->adapter('AccessLog', 'access_logs', $this->connect());
+        $deadline = hrtime(true) + 5_000_000_000;
+        while (!$recovery->acquireLock()) {
+            if (hrtime(true) >= $deadline) {
+                $this->fail('Terminated session did not release its retention lock.');
+            }
+            usleep(10000);
+        }
+        try {
+            $this->assertSame([1, 2, 10001], array_map('intval', $this->pdo->query("SELECT id FROM $table ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
+            $this->assertSame($checkpoint, $recovery->loadCheckpoint());
+            $state = LogRetentionCheckpoint::resume($recovery->loadCheckpoint(), 30, $cutoff, $high);
+            $result = (new LogRetentionSweep())->run(
+                $state['cursor'], $high, $cutoff, [$recovery, 'nextId'],
+                [$recovery, 'processBatch'],
+                function ($cursor) use ($recovery, $cutoff, $high) {
+                    $recovery->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, $cursor, $high));
+                },
+                static function () { return true; }
+            );
+            $this->assertTrue($result['complete']);
+            $this->assertSame(2, $result['affected']);
+            $this->assertSame([2], array_map('intval', $this->pdo->query("SELECT id FROM $table ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
+            $this->assertSame(LogRetentionCheckpoint::encode(30, $cutoff, $high, $high), $recovery->loadCheckpoint());
+        } finally {
+            $recovery->releaseLock();
+        }
+    }
+
     public function testKilledSessionRecoversCommittedBatchWithoutCheckpoint(): void
     {
         $this->seed('access_logs');
