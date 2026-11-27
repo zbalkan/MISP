@@ -3030,7 +3030,13 @@ class Server extends AppModel
             try {
                 LogRetentionPolicy::validateCombination($setting['name'], $value, ['Configure', 'read']);
             } catch (InvalidArgumentException $e) {
-                return __('Configure a valid log writer timezone before enabling audit or application log retention, and disable both policies before clearing it.');
+                if ($setting['name'] !== LogRetentionPolicy::TIMEZONE_SETTING) {
+                    return __('Configure a valid log writer timezone before enabling audit or application log retention.');
+                }
+                if ($e->getMessage() === 'Retention must be an integer between 0 and 36500 days.') {
+                    return __('Correct invalid audit or application log retention periods before clearing the writer timezone.');
+                }
+                return __('Disable audit and application log retention before clearing the writer timezone.');
             }
         }
         if (isset($setting['beforeHook'])) {
