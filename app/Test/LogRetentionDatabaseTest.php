@@ -170,6 +170,84 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testConcurrentWriterAndHighWaterMark(): void
+    {
+        $table = $this->table('access_logs');
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $writer = $this->connect();
+        foreach (['REPEATABLE READ', 'READ COMMITTED'] as $isolation) {
+            $this->pdo->exec("DELETE FROM $table");
+            $this->pdo->exec("SET SESSION TRANSACTION ISOLATION LEVEL $isolation");
+            $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2000-01-01'), (20000, '2000-01-01')");
+            $db = $this->adapter('AccessLog', 'access_logs');
+            $this->assertTrue($db->acquireLock());
+            try {
+                $high = $db->highWaterMark();
+                $this->assertSame(20000, $high);
+                $this->assertSame(1, $db->processBatch(1, 10000, $cutoff, false));
+                $start = hrtime(true);
+                $writer->exec("INSERT INTO $table (id, created) VALUES (5000, '2000-01-01'), (20001, '2000-01-01')");
+                $insertMs = (hrtime(true) - $start) / 1e6;
+                $result = (new LogRetentionSweep())->run(10000, $high, $cutoff,
+                    [$db, 'nextId'], [$db, 'processBatch'], static function () {}, [$db, 'ownsLock']);
+                $this->assertTrue($result['complete']);
+                $this->assertSame(1, $result['affected']);
+                $this->assertSame([5000, 20001], $this->ids('access_logs'));
+                $next = (new LogRetentionSweep())->run(0, $db->highWaterMark(), $cutoff,
+                    [$db, 'nextId'], [$db, 'processBatch'], static function () {}, [$db, 'ownsLock']);
+                $this->assertSame(2, $next['affected']);
+                $this->assertSame([], $this->ids('access_logs'));
+                fwrite(STDOUT, json_encode([
+                    'benchmark' => 'writer_between_batches',
+                    'isolation' => $isolation,
+                    'insert_ms' => $insertMs,
+                ], JSON_THROW_ON_ERROR) . PHP_EOL);
+            } finally {
+                $db->releaseLock();
+            }
+        }
+    }
+
+    public function testDeleteRangeGapLockCharacterisation(): void
+    {
+        $table = $this->table('access_logs');
+        $writer = $this->connect();
+        $writer->exec('SET SESSION innodb_lock_wait_timeout = 1');
+        foreach (['REPEATABLE READ', 'READ COMMITTED'] as $isolation) {
+            $this->pdo->exec("DELETE FROM $table");
+            $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2000-01-01'), (10000, '2000-01-01'), (20000, '2099-01-01')");
+            $this->pdo->exec("SET SESSION TRANSACTION ISOLATION LEVEL $isolation");
+            $this->pdo->beginTransaction();
+            try {
+                // Mirror the production DELETE while holding its transaction
+                // open to observe contention from an independent session.
+                $this->pdo->exec("DELETE FROM $table WHERE id >= 1 AND id <= 10000 AND created < '2026-01-01'");
+                foreach ([5000, 30000] as $id) {
+                    $start = hrtime(true);
+                    $blocked = false;
+                    try {
+                        $writer->exec("INSERT INTO $table (id, created) VALUES ($id, '2099-01-01')");
+                    } catch (PDOException $e) {
+                        $this->assertSame(1205, (int)$e->errorInfo[1]);
+                        $blocked = true;
+                    }
+                    fwrite(STDOUT, json_encode([
+                        'benchmark' => 'delete_range_gap_lock',
+                        'isolation' => $isolation,
+                        'insert_id' => $id,
+                        'blocked' => $blocked,
+                        'elapsed_ms' => (hrtime(true) - $start) / 1e6,
+                    ], JSON_THROW_ON_ERROR) . PHP_EOL);
+                    if ($id === 30000 || $isolation === 'READ COMMITTED') {
+                        $this->assertFalse($blocked);
+                    }
+                }
+            } finally {
+                $this->pdo->rollBack();
+            }
+        }
+    }
+
     public function testTimestampDistributionBenchmark(): void
     {
         $table = $this->table('access_logs');
