@@ -130,8 +130,22 @@ class LogRetentionDatabaseTest extends TestCase
         $this->assertTrue($a->acquireLock());
         $this->assertFalse($b->acquireLock());
         unset($a);
-        $this->assertTrue($b->acquireLock());
-        $b->releaseLock();
+        // Closing a client connection does not synchronously wait for the
+        // server to finish session cleanup. Poll the non-blocking acquisition
+        // with a bounded deadline instead of assuming immediate availability.
+        $deadline = hrtime(true) + 5_000_000_000;
+        do {
+            if ($b->acquireLock()) {
+                try {
+                    $this->assertTrue($b->ownsLock());
+                } finally {
+                    $b->releaseLock();
+                }
+                return;
+            }
+            usleep(10000);
+        } while (hrtime(true) < $deadline);
+        $this->fail('Database did not release the disconnected session lock within five seconds.');
     }
 
     public function testFailedDeleteRollsBackAndPreservesCheckpoint(): void

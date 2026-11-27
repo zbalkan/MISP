@@ -57,6 +57,8 @@ jobs:
           MISP_RETENTION_TEST_USER: retention
           MISP_RETENTION_TEST_PASSWORD: retention-test
         run: |
+          status=0
           for test in app/Test/LogRetention*Test.php; do
-            phpunit "$test" || exit 1
+            phpunit "$test" || status=1
           done
+          exit "$status"
