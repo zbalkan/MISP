@@ -74,17 +74,42 @@ class LogRetentionDatabaseTest extends TestCase
         return array_map('intval', $this->pdo->query("SELECT id FROM " . $this->table($table) . " ORDER BY id")->fetchAll(PDO::FETCH_COLUMN));
     }
 
-    public function testDailyDispatchClaimPersistsAcrossSessions(): void
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function testNativeTaskClaimAndJobAssociationAcrossSessions(): void
     {
-        $a = $this->adapter('AccessLog', 'access_logs');
-        $b = $this->adapter('AccessLog', 'access_logs', $this->connect());
-        $this->assertTrue($a->claimDailyDispatch());
-        $this->assertFalse($b->claimDailyDispatch());
-        $this->pdo->exec("UPDATE " . $this->table('admin_settings') . " SET value = '0' WHERE setting = 'log_retention_next_dispatch'");
-        $this->assertTrue($b->claimDailyDispatch());
-        $this->assertFalse($a->claimDailyDispatch());
-        $this->pdo->exec("UPDATE " . $this->table('admin_settings') . " SET value = 'invalid' WHERE setting = 'log_retention_next_dispatch'");
-        $this->assertFalse($a->claimDailyDispatch());
+        class_alias(RetentionModelTestApp::class, 'App');
+        class_alias(RetentionModelTestBase::class, 'AppModel');
+        require_once __DIR__ . '/../Model/Task.php';
+        $this->createTable('scheduled_tasks', 'id INT PRIMARY KEY, type VARCHAR(100), action VARCHAR(40), user_id INT, enabled BOOLEAN, timer INT, next_execution_time INT, last_job_id INT NULL, message VARCHAR(255), last_run_at INT NULL');
+        $this->createTable('jobs', 'id INT PRIMARY KEY, status INT');
+        $table = $this->table('scheduled_tasks');
+        $jobs = $this->table('jobs');
+        $this->pdo->exec("INSERT INTO $table VALUES (1, 'Admin', 'enforceLogRetention', 0, TRUE, 86400, 100, NULL, '', NULL)");
+        $a = new Task();
+        $a->table = 'scheduled_tasks';
+        $a->retentionDatasource = new RetentionDatabaseTestModel('Task', 'scheduled_tasks', $this->pdo, $this->prefix);
+        $b = new Task();
+        $b->table = 'scheduled_tasks';
+        $b->retentionDatasource = new RetentionDatabaseTestModel('Task', 'scheduled_tasks', $this->connect(), $this->prefix);
+        $snapshot = $this->pdo->query("SELECT * FROM $table")->fetch(PDO::FETCH_ASSOC);
+        $claim = $a->claimRetentionExecution($snapshot, 100);
+        $this->assertSame(86500, $claim);
+        $this->assertNull($b->claimRetentionExecution($snapshot, 100));
+        $this->pdo->exec("INSERT INTO $jobs VALUES (7, 0)");
+        $this->assertFalse($b->attachRetentionJob(1, 100, 7));
+        $this->assertTrue($a->attachRetentionJob(1, $claim, 7));
+        $this->assertFalse($b->attachRetentionJob(1, $claim, 7));
+        $snapshot = $this->pdo->query("SELECT * FROM $table")->fetch(PDO::FETCH_ASSOC);
+        foreach ([0, 1, 2] as $status) {
+            $this->pdo->exec("UPDATE $jobs SET status = $status");
+            $this->assertNull($b->claimRetentionExecution($snapshot, 86500));
+        }
+        $this->pdo->exec("UPDATE $jobs SET status = 4");
+        $this->assertSame(172900, $b->claimRetentionExecution($snapshot, 86500));
+        $this->assertNull($a->claimRetentionExecution($snapshot, 86500));
     }
 
     public function testBoundedDeletionAndDryRunAcrossAllTables(): void

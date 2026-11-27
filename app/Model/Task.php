@@ -3,6 +3,9 @@ App::uses('AppModel', 'Model');
 
 class Task extends AppModel
 {
+    const RETENTION_ACTION = 'enforceLogRetention';
+    const RETENTION_INTERVAL = 86400;
+
     public $recursive = -1;
 
     public $useTable = 'scheduled_tasks';
@@ -18,4 +21,78 @@ class Task extends AppModel
             'foreignKey' => 'last_job_id',
         ]
     ];
+
+    public static function isManagedRetention(array $task): bool
+    {
+        return ($task['type'] ?? null) === 'Admin' && ($task['action'] ?? null) === self::RETENTION_ACTION;
+    }
+
+    /** Caller serializes provisioning across scheduler sessions. */
+    public function ensureRetentionTask(int $now): void
+    {
+        $tasks = $this->find('all', [
+            'conditions' => ['Task.type' => 'Admin', 'Task.action' => self::RETENTION_ACTION],
+            'recursive' => -1,
+        ]);
+        if (count($tasks) > 1) {
+            throw new RuntimeException('Multiple managed retention tasks exist.');
+        }
+        if ($tasks) {
+            return;
+        }
+        $this->create();
+        if (!$this->save([
+            'type' => 'Admin', 'action' => self::RETENTION_ACTION,
+            'description' => 'Managed database log retention (configure via MISP settings)',
+            'timer' => self::RETENTION_INTERVAL, 'next_execution_time' => $now,
+            'enabled' => true, 'user_id' => 0, 'message' => '', 'params' => null,
+        ], ['atomic' => false])) {
+            throw new RuntimeException('Could not provision managed retention task.');
+        }
+    }
+
+    /** Claim the native schedule, not a second timestamp in admin_settings.
+     * An active or unknown previous job blocks another dispatch.
+     */
+    public function claimRetentionExecution(array $task, int $now): ?int
+    {
+        if (!self::isManagedRetention($task) || (int)$task['user_id'] !== 0 ||
+            (int)$task['timer'] !== self::RETENTION_INTERVAL || (int)$task['next_execution_time'] > $now) {
+            return null;
+        }
+        $db = $this->getDataSource();
+        $pdo = $db->getConnection();
+        if ($pdo->inTransaction()) {
+            throw new RuntimeException('Task claim requires an autocommit session.');
+        }
+        $table = $db->fullTableName($this);
+        $jobs = $db->fullTableName('jobs');
+        $next = $now + self::RETENTION_INTERVAL;
+        $statement = $pdo->prepare("UPDATE $table SET next_execution_time = ?, last_job_id = NULL
+            WHERE id = ? AND type = 'Admin' AND action = ? AND user_id = 0 AND enabled = TRUE
+            AND timer = ? AND next_execution_time = ? AND next_execution_time <= ?
+            AND (last_job_id IS NULL OR last_job_id IN (SELECT id FROM $jobs WHERE status IN (3, 4)))");
+        try {
+            $statement->execute([$next, $task['id'], self::RETENTION_ACTION, self::RETENTION_INTERVAL, $task['next_execution_time'], $now]);
+            return $statement->rowCount() === 1 ? $next : null;
+        } finally {
+            $statement->closeCursor();
+        }
+    }
+
+    /** Associate the job before enqueueing; reject a stale claim. */
+    public function attachRetentionJob(int $id, int $claim, int $jobId): bool
+    {
+        $db = $this->getDataSource();
+        $table = $db->fullTableName($this);
+        $statement = $db->getConnection()->prepare("UPDATE $table SET last_job_id = ?, message = ?, last_run_at = ?
+            WHERE id = ? AND type = 'Admin' AND action = ? AND user_id = 0 AND enabled = TRUE
+            AND next_execution_time = ? AND last_job_id IS NULL");
+        try {
+            $statement->execute([$jobId, 'Dispatch reserved', time(), $id, self::RETENTION_ACTION, $claim]);
+            return $statement->rowCount() === 1;
+        } finally {
+            $statement->closeCursor();
+        }
+    }
 }

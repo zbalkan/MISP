@@ -5,8 +5,8 @@ declare(strict_types=1);
 App::uses('Shell', 'Console');
 App::uses('AppShell', 'Console/Command');
 App::uses('Worker', 'Tools/BackgroundJobs');
-App::uses('LogRetentionDispatch', 'Tools');
 App::uses('LogRetentionDatabase', 'Tools');
+App::uses('LogRetentionPolicyReader', 'Tools');
 
 class SchedulerWorkerShell extends AppShell
 {
@@ -43,7 +43,8 @@ class SchedulerWorkerShell extends AppShell
         // reporting variant changes nothing; the blocking one disables users
         // it no longer backs, so it is a separate, explicit choice.
         'checkUserValidity',
-        'blockInvalidUsers'
+        'blockInvalidUsers',
+        'enforceLogRetention'
     ];
 
     public function getOptionParser(): ConsoleOptionParser
@@ -88,7 +89,7 @@ class SchedulerWorkerShell extends AppShell
                 continue;
             }
 
-            $this->checkLogRetention();
+            $this->provisionRetentionTask();
             $now = time();
 
             try {
@@ -120,7 +121,18 @@ class SchedulerWorkerShell extends AppShell
         }
     }
 
-    private function checkLogRetention(): void
+    private function retentionEnabled(LogRetentionDatabase $database): bool
+    {
+        $enabled = false;
+        foreach (LogRetentionPolicy::DAY_SETTINGS as $name) {
+            if (LogRetentionPolicyReader::read(substr($name, 5), APP . 'Config' . DS . 'config.php', [$database, 'readPolicySetting']) > 0) {
+                $enabled = true;
+            }
+        }
+        return $enabled;
+    }
+
+    private function provisionRetentionTask(): void
     {
         if (hrtime(true) < $this->nextRetentionCheck) {
             return;
@@ -128,22 +140,16 @@ class SchedulerWorkerShell extends AppShell
         $this->nextRetentionCheck = hrtime(true) + 60_000_000_000;
         try {
             $database = new LogRetentionDatabase(ClassRegistry::init('AccessLog'));
-            LogRetentionDispatch::run(
-                APP . 'Config' . DS . 'config.php',
-                [$database, 'readPolicySetting'],
-                [$database, 'claimDailyDispatch'],
-                function () {
-                    $jobId = $this->Job->createJob('SYSTEM', Job::WORKER_DEFAULT, 'admin_action', 'enforceLogRetention', __('Starting configured log retention.'));
-                    try {
-                        $this->getBackgroundJobsTool()->enqueue(BackgroundJobsTool::DEFAULT_QUEUE, BackgroundJobsTool::CMD_ADMIN, ['enforceLogRetention', $jobId], true, $jobId);
-                    } catch (Throwable $e) {
-                        $this->Job->saveStatus($jobId, false, __('Retention enqueue outcome uncertain; inspect scheduler logs.'));
-                        throw $e;
-                    }
-                }
-            );
+            if (!$this->retentionEnabled($database) || !$database->acquireLock()) {
+                return;
+            }
+            try {
+                $this->Task->ensureRetentionTask(time());
+            } finally {
+                $database->releaseLock();
+            }
         } catch (Throwable $e) {
-            CakeLog::error('Configured log retention dispatch failed: ' . $e->getMessage());
+            CakeLog::error('Managed retention task provisioning failed: ' . $e->getMessage());
         }
     }
 
@@ -212,6 +218,19 @@ class SchedulerWorkerShell extends AppShell
     private function processTask(array $task)
     {
         $this->logMessage('info', $task['id'], "processing task: {$task['type']}");
+
+        if (Task::isManagedRetention($task)) {
+            $database = new LogRetentionDatabase(ClassRegistry::init('AccessLog'));
+            if (!$this->retentionEnabled($database)) {
+                return;
+            }
+            $claim = $this->Task->claimRetentionExecution($task, time());
+            if ($claim !== null) {
+                $task['retention_claim'] = $claim;
+                $this->runAdminTask($task);
+            }
+            return;
+        }
 
         if (isset($task['Job']) && $task['Job']['status'] === Job::STATUS_RUNNING) {
             $this->logMessage('info', $task['id'], "job is already running for this task: {$task['last_job_id']}");
@@ -724,7 +743,11 @@ class SchedulerWorkerShell extends AppShell
             return;
         }
 
-        $user = $this->User->getAuthUser($task['user_id']);
+        $managed = Task::isManagedRetention($task);
+        if ($managed && (!isset($task['retention_claim']) || (int)$task['user_id'] !== 0)) {
+            throw new RuntimeException('Managed retention requires an atomic task claim.');
+        }
+        $user = $managed ? 'SYSTEM' : $this->User->getAuthUser($task['user_id']);
         if (empty($user)) {
             $this->logMessage('error', $task['id'], "user ID do not match an existing user.");
             return;
@@ -759,6 +782,11 @@ class SchedulerWorkerShell extends AppShell
             ];
         }
 
+        if ($managed && !$this->Task->attachRetentionJob((int)$task['id'], $task['retention_claim'], $jobId)) {
+            $this->Job->saveStatus($jobId, false, __('Retention dispatch claim no longer valid.'));
+            return;
+        }
+
         // Enqueue the admin action
         $this->getBackgroundJobsTool()->enqueue(
             BackgroundJobsTool::DEFAULT_QUEUE,
@@ -768,12 +796,14 @@ class SchedulerWorkerShell extends AppShell
             $jobId
         );
 
-        $this->Task->save([
-            'id' => $task['id'],
-            'last_job_id' => $jobId,
-            'message' => 'Enqueued',
-            'last_run_at' => time()
-        ]);
+        if (!$managed) {
+            $this->Task->save([
+                'id' => $task['id'],
+                'last_job_id' => $jobId,
+                'message' => 'Enqueued',
+                'last_run_at' => time()
+            ]);
+        }
 
         $this->logMessage('info', $task['id'], "enqueued Admin Action: {$task['action']}.");
     }

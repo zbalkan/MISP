@@ -83,11 +83,23 @@ class TasksController extends AppController
         ];
     }
 
+    private function assertNotManagedRetention($id): void
+    {
+        $task = $this->Task->find('first', [
+            'conditions' => ['Task.id' => $id],
+            'recursive' => -1,
+        ]);
+        if ($task && Task::isManagedRetention($task['Task'])) {
+            throw new MethodNotAllowedException(__('Managed log retention is controlled by MISP retention settings.'));
+        }
+    }
+
     public function toggleEnabled($id)
     {
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
+        $this->assertNotManagedRetention($id);
 
         $task = $this->Task->find('first', array(
             'recursive' => -1,
@@ -163,6 +175,7 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
+        $this->assertNotManagedRetention($id);
 
         $this->set('dropdownData', $this->__getDropdownData());
 
@@ -257,6 +270,7 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
+        $this->assertNotManagedRetention($id);
         $this->CRUD->delete($id);
         if ($this->IndexFilter->isRest()) {
             return $this->restResponsePayload;
@@ -285,7 +299,7 @@ class TasksController extends AppController
                     'recursive' => -1,
                     'conditions' => ['Task.id' => $taskId],
                 ]);
-                if (empty($task)) {
+                if (empty($task) || Task::isManagedRetention($task['Task'])) {
                     $failed++;
                     continue;
                 }
@@ -346,6 +360,7 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
+        $this->assertNotManagedRetention($id);
 
         $task = $this->Task->find('first', array(
             'recursive' => -1,
@@ -591,6 +606,9 @@ class TasksController extends AppController
                 return;
             }
 
+            if ($data['Task']['admin_action'] === Task::RETENTION_ACTION) {
+                throw new MethodNotAllowedException(__('Managed log retention is provisioned automatically.'));
+            }
             if (!in_array($data['Task']['admin_action'], SchedulerWorkerShell::ADMIN_ACTIONS)) {
                 $this->Flash->error(__('Invalid admin action selected.'));
                 return;
