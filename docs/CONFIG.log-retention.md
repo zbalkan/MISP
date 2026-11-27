@@ -87,6 +87,8 @@ If an environment override exists, change it at its source and restart the affec
 
 ## Recovering a blocked managed task
 
+For enabled retention policies, the scheduler logs a warning for an overdue task blocked by invalid owner or interval, a missing associated job, or a nonterminal or unexpected job status. Warnings are limited to once per five minutes per scheduler process and describe the observed task snapshot, not proof of an abandoned job.
+
 The task deliberately refuses a new dispatch if its last job is nonterminal or missing. A crash, manual database change or uncertain Redis enqueue outcome can leave such an association. A missing Redis status alone does not prove a job is absent: Redis job history expires and a queue write can succeed before a database process ID is recorded. Native job purges protect the associated job and nonterminal system retention jobs; older terminal jobs remain purgeable.
 
 First disable all automatic retention policies at their effective sources. Inspect the task and job records, the default queue, worker processes and logs. For an unprefixed database the following read-only query identifies the association:
