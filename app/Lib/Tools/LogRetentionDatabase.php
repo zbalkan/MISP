@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/LogRetentionSweep.php';
-require_once __DIR__ . '/LogRetentionCheckpoint.php';
 require_once __DIR__ . '/LogRetentionPolicy.php';
 require_once __DIR__ . '/LogRetentionCleanupException.php';
 require_once __DIR__ . '/LogRetentionTopology.php';
@@ -309,63 +308,6 @@ final class LogRetentionDatabase
             }
             return $count;
         } catch (Throwable $e) {
-            try {
-                if ($this->connection->inTransaction() && !$this->connection->rollBack()) {
-                    throw new RuntimeException('Could not roll back retention transaction.');
-                }
-            } catch (Throwable $cleanupFailure) {
-                $this->unusable = true;
-                throw new LogRetentionCleanupException($e, $cleanupFailure);
-            }
-            throw $e;
-        }
-    }
-
-    /**
-     * Execute one bounded range batch and persist its checkpoint atomically.
-     * The caller supplies the validated sweep identity under the advisory lock.
-     */
-    public function executeBatch(int $days, DateTimeImmutable $cutoff, int $cursor, int $highWaterMark, int $batchSize = 10000): array
-    {
-        if ($days <= 0 || $cursor < 0 || $highWaterMark < $cursor ||
-            $batchSize < 1 || $batchSize > LogRetentionSweep::MAX_BATCH_SIZE) {
-            throw new InvalidArgumentException('Invalid retention batch state.');
-        }
-        if (!$this->ownsLock() || $this->connection->inTransaction()) {
-            throw new RuntimeException('Retention requires an owned lock and its own transaction.');
-        }
-        if (!$this->connection->beginTransaction()) {
-            throw new RuntimeException('Could not begin retention transaction.');
-        }
-        $committing = false;
-        try {
-            // A bounded numeric range is portable and guarantees that even
-            // concurrent inserts cannot expand the deletion beyond batchSize.
-            // Skip empty gaps using the primary-key index.
-            $first = $this->nextId($cursor, $highWaterMark);
-            $count = 0;
-            $last = $highWaterMark;
-            if ($first !== null) {
-                $last = $first + min($batchSize - 1, $highWaterMark - $first);
-                $statement = $this->execute("DELETE FROM {$this->table} WHERE id >= ? AND id <= ? AND created < ?",
-                    [$first, $last, $this->storageCutoff($cutoff)]);
-                $count = $statement->rowCount();
-                $statement->closeCursor();
-                if ($count < 0 || $count > $last - $first + 1) {
-                    throw new RuntimeException('Retention batch exceeded its deletion bound.');
-                }
-            }
-            AdminSetting::writeInternalState($this->dialect, $this->checkpointKey,
-                LogRetentionCheckpoint::encode($days, $cutoff, $last, $highWaterMark));
-            $committing = true;
-            if (!$this->connection->commit()) {
-                throw new RuntimeException('Could not commit retention transaction.');
-            }
-            return ['cursor' => $last, 'affected' => $count, 'complete' => $last === $highWaterMark];
-        } catch (Throwable $e) {
-            if ($committing) {
-                $this->unusable = true;
-            }
             try {
                 if ($this->connection->inTransaction() && !$this->connection->rollBack()) {
                     throw new RuntimeException('Could not roll back retention transaction.');
