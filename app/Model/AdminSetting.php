@@ -37,14 +37,11 @@ class AdminSetting extends AppModel
         }
     }
 
-    /** Atomic upsert; caller is responsible for any higher-level locking. */
+    /** Atomic upsert on the caller's session; participates in any active transaction. */
     public static function writeInternalState(SqlDialect $dialect, string $setting, string $value): void
     {
         $db = $dialect->getDataSource();
         $pdo = $db->getConnection();
-        if ($pdo->inTransaction()) {
-            throw new RuntimeException('Internal state requires an autocommit session.');
-        }
         $table = $db->fullTableName('admin_settings');
         $sql = $dialect->upsert("INSERT INTO $table (setting, value) VALUES (?, ?)", ['setting'], ['value']);
         $statement = $pdo->prepare($sql);
