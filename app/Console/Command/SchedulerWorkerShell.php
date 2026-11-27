@@ -26,6 +26,7 @@ class SchedulerWorkerShell extends AppShell
     const LOOP_INTERVAL = 10;
 
     private $nextRetentionCheck = 0;
+    private $nextRetentionDiagnostic = 0;
 
     /** Upper bound of the back-off applied while the database is unreachable. */
     const MAX_DB_BACKOFF = 60;
@@ -109,9 +110,10 @@ class SchedulerWorkerShell extends AppShell
             }
 
             foreach ($tasks as $task) {
+                $taskJob = $task['Job'] ?? null;
                 $task = $task['Task'];
                 try {
-                    $this->processTask($task);
+                    $this->processTask($task, $taskJob);
                 } catch (Throwable $e) {
                     $this->logMessage('error', $task['id'], "failed to process task: " . $e->getMessage());
                 }
@@ -215,7 +217,7 @@ class SchedulerWorkerShell extends AppShell
         }
     }
 
-    private function processTask(array $task)
+    private function processTask(array $task, ?array $taskJob = null)
     {
         $this->logMessage('info', $task['id'], "processing task: {$task['type']}");
 
@@ -228,6 +230,12 @@ class SchedulerWorkerShell extends AppShell
             if ($claim !== null) {
                 $task['retention_claim'] = $claim;
                 $this->runAdminTask($task);
+            } elseif (hrtime(true) >= $this->nextRetentionDiagnostic) {
+                $reason = Task::retentionBlockReason($task, $taskJob, time());
+                if ($reason !== null) {
+                    $this->nextRetentionDiagnostic = hrtime(true) + 300_000_000_000;
+                    $this->logMessage('warning', $task['id'], $reason);
+                }
             }
             return;
         }
