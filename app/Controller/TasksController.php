@@ -83,7 +83,7 @@ class TasksController extends AppController
         ];
     }
 
-    private function assertNotManagedRetention($id): void
+    private function __assertNotManagedRetention($id): void
     {
         $task = $this->Task->find('first', [
             'conditions' => ['Task.id' => $id],
@@ -99,7 +99,7 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
-        $this->assertNotManagedRetention($id);
+        $this->__assertNotManagedRetention($id);
 
         $task = $this->Task->find('first', array(
             'recursive' => -1,
@@ -175,7 +175,7 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
-        $this->assertNotManagedRetention($id);
+        $this->__assertNotManagedRetention($id);
 
         $this->set('dropdownData', $this->__getDropdownData());
 
@@ -270,7 +270,7 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
-        $this->assertNotManagedRetention($id);
+        $this->__assertNotManagedRetention($id);
         $this->CRUD->delete($id);
         if ($this->IndexFilter->isRest()) {
             return $this->restResponsePayload;
@@ -360,7 +360,7 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
-        $this->assertNotManagedRetention($id);
+        $this->__assertNotManagedRetention($id);
 
         $task = $this->Task->find('first', array(
             'recursive' => -1,
