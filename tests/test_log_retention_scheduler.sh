@@ -41,6 +41,27 @@ cake Admin setSetting MISP.audit_log_retention_days 0
 cake Admin setSetting MISP.log_retention_days 0
 cake Admin setSetting MISP.access_log_retention_days 0
 
+# Validate the live settings controller, including forced saves. Keep all
+# policies disabled throughout these negative tests to avoid dispatch races.
+setting_request() {
+    curl -sS -H "Authorization: $AUTH" -H 'Accept: application/json' -H 'Content-Type: application/json' "$@"
+}
+setting_url="http://$HOST/servers/serverSettingsEdit"
+setting_request --data '{"value":"unconfigured"}' "$setting_url/MISP.log_retention_timezone" | grep -F 'Field updated'
+for setting in audit_log_retention_days access_log_retention_days log_retention_days; do
+    for value in -1 36501 1.5 invalid; do
+        setting_request --data "{\"value\":\"$value\",\"force\":true}" "$setting_url/MISP.$setting" | grep -F 'Retention must be an integer between 0 and 36500 days.'
+    done
+    setting_request "$setting_url/MISP.$setting" | python3 -c 'import json,sys; assert int(json.load(sys.stdin)[sys.argv[1]]) == 0' "MISP.$setting"
+done
+for setting in audit_log_retention_days log_retention_days; do
+    setting_request --data '{"value":30,"force":true}' "$setting_url/MISP.$setting" | grep -F 'Configure a valid log writer timezone'
+    setting_request "$setting_url/MISP.$setting" | python3 -c 'import json,sys; assert int(json.load(sys.stdin)[sys.argv[1]]) == 0' "MISP.$setting"
+done
+setting_request --data '{"value":"Invalid/Timezone","force":true}' "$setting_url/MISP.log_retention_timezone" | grep -F 'Specify a valid IANA log writer timezone'
+setting_request "$setting_url/MISP.log_retention_timezone" | python3 -c 'import json,sys; assert json.load(sys.stdin)["MISP.log_retention_timezone"] == "unconfigured"'
+echo 'Live settings controller rejects invalid and unsafe forced retention changes.'
+
 query "INSERT INTO access_logs
     (created, user_id, org_id, request_method, request_id, controller, action, url, response_code, memory_usage, duration, query_count)
     VALUES ('2000-01-01 00:00:00', 0, 0, 0, '$marker-old', 'retention_test', 'index', '/retention-test', 200, 0, 0, 0),
