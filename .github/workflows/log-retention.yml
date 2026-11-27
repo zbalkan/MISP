@@ -149,3 +149,60 @@ jobs:
           MISP_RETENTION_TEST_USER: retention
           MISP_RETENTION_TEST_PASSWORD: retention-test
         run: phpunit --bootstrap "$RUNNER_TEMP/retention-clock/vendor/autoload.php" app/Test/LogRetentionPostgresTest.php
+
+  mysql-topology:
+    name: MySQL 8.4 Group Replication topology
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: retention-root
+          MYSQL_DATABASE: retention_test
+          MYSQL_USER: retention
+          MYSQL_PASSWORD: retention-test
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql
+          coverage: none
+      - name: Validate actual MySQL topology variables
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+          MYSQL_PORT: ${{ job.services.mysql.ports[3306] }}
+        run: |
+          mysql_root() { docker exec "$MYSQL_CONTAINER" mysql -uroot -pretention-root -e "$1"; }
+          check_topology() {
+            EXPECT_BLOCKED="$1" php -r '
+              require "app/Lib/Tools/LogRetentionTopology.php";
+              $pdo = new PDO("mysql:host=127.0.0.1;port=" . getenv("MYSQL_PORT") . ";dbname=retention_test", "retention", "retention-test", [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+              $variables = $pdo->query("SHOW GLOBAL VARIABLES WHERE Variable_name IN (\x27wsrep_on\x27, \x27wsrep_provider\x27, \x27group_replication_group_name\x27)")->fetchAll(PDO::FETCH_KEY_PAIR);
+              echo json_encode($variables), PHP_EOL;
+              $blocked = false;
+              try {
+                  LogRetentionTopology::assertSupported($variables);
+              } catch (RuntimeException $e) {
+                  if ($e->getMessage() !== "Log retention does not support MySQL Group Replication configurations.") {
+                      throw $e;
+                  }
+                  $blocked = true;
+              }
+              if ($blocked !== (getenv("EXPECT_BLOCKED") === "1")) {
+                  throw new RuntimeException("Unexpected topology decision.");
+              }
+            '
+          }
+          check_topology 0
+          mysql_root "INSTALL PLUGIN group_replication SONAME 'group_replication.so'"
+          check_topology 0
+          mysql_root "SET GLOBAL group_replication_group_name = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'"
+          check_topology 1
