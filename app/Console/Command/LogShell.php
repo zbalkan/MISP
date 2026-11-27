@@ -281,7 +281,7 @@ class LogShell extends AppShell
     {
         try {
             $days = LogRetentionPolicy::parse($this->args[0] ?? null);
-            $result = LogRetentionService::runExplicit($model, $days, (bool)$this->param('dry-run'), $this->retentionTimezone());
+            $result = LogRetentionService::runExplicit($model, $days, (bool)$this->param('dry-run'), $this->retentionTimezone(), null, $this->retentionConfigFile());
             $this->reportRetention($category, $result);
             return true;
         } catch (Throwable $e) {

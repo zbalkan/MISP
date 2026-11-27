@@ -389,24 +389,25 @@ class LogRetentionDatabaseTest extends TestCase
             $this->pdo->exec("INSERT INTO " . $this->table($table) . " (id, created) VALUES
                 (1, '2000-01-01 00:00:00'), (2, '2099-01-01 00:00:00')");
         }
-        $shell->args = ['30'];
-        $shell->params = ['dry-run' => true, 'log-timezone' => 'UTC'];
-        foreach (['auditLogRetention', 'accessLogRetention', 'applicationLogRetention'] as $command) {
-            $this->assertTrue($shell->$command());
-        }
-        foreach (['audit_logs', 'access_logs', 'logs'] as $table) {
-            $this->assertSame([1, 2], $this->ids($table));
-        }
-        $this->assertStringContainsString('eligible=1', implode("\n", $shell->output));
-        $shell->params = [];
-        $shell->args = ['0'];
-        $this->assertFalse($shell->accessLogRetention());
-        $this->assertFalse($shell->auditLogRetention());
-        $shell->args = ['30'];
-        $this->assertFalse($shell->auditLogRetention()); // writer timezone missing
-        $this->assertSame([1, 2], $this->ids('audit_logs'));
         $shell->configFile = tempnam(sys_get_temp_dir(), 'retention-config-');
         try {
+            file_put_contents($shell->configFile, '<?php $config = ["MISP" => []];');
+            $shell->args = ['30'];
+            $shell->params = ['dry-run' => true, 'log-timezone' => 'UTC'];
+            foreach (['auditLogRetention', 'accessLogRetention', 'applicationLogRetention'] as $command) {
+                $this->assertTrue($shell->$command());
+            }
+            foreach (['audit_logs', 'access_logs', 'logs'] as $table) {
+                $this->assertSame([1, 2], $this->ids($table));
+            }
+            $this->assertStringContainsString('eligible=1', implode("\n", $shell->output));
+            $shell->params = [];
+            $shell->args = ['0'];
+            $this->assertFalse($shell->accessLogRetention());
+            $this->assertFalse($shell->auditLogRetention());
+            $shell->args = ['30'];
+            $this->assertFalse($shell->auditLogRetention()); // writer timezone missing
+            $this->assertSame([1, 2], $this->ids('audit_logs'));
             file_put_contents($shell->configFile, '<?php $config = ["MISP" => ["access_log_retention_days" => 30]];');
             $shell->args = [];
             $shell->params = ['dry-run' => true];
@@ -416,6 +417,18 @@ class LogRetentionDatabaseTest extends TestCase
             $this->assertTrue($shell->retention());
             $this->assertSame([2], $this->ids('access_logs'));
             $this->assertSame([1, 2], $this->ids('audit_logs'));
+            $this->assertSame([1, 2], $this->ids('logs'));
+            file_put_contents($shell->configFile, '<?php $config = ["MISP" => ["audit_log_retention_days" => 30, "log_retention_timezone" => "UTC"]];');
+            $shell->params = ['dry-run' => true, 'log-timezone' => 'Europe/Tallinn'];
+            $this->assertFalse($shell->retention());
+            $this->assertSame([1, 2], $this->ids('audit_logs'));
+            $shell->params = ['dry-run' => true];
+            $this->assertTrue($shell->retention());
+            $shell->args = ['30'];
+            $this->assertTrue($shell->applicationLogRetention());
+            $shell->params = [];
+            $this->assertTrue($shell->retention());
+            $this->assertSame([2], $this->ids('audit_logs'));
             $this->assertSame([1, 2], $this->ids('logs'));
         } finally {
             unlink($shell->configFile);

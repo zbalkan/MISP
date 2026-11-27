@@ -12,13 +12,24 @@ final class LogRetentionPolicyReader
 {
     public static function read(string $setting, string $configFile, callable $readDatabase): int
     {
-        if (!in_array($setting, ['audit_log_retention_days', 'access_log_retention_days', 'log_retention_days'], true)) {
+        if (!in_array('MISP.' . $setting, LogRetentionPolicy::DAY_SETTINGS, true)) {
             throw new InvalidArgumentException('Unknown retention setting.');
         }
+        return LogRetentionPolicy::parse(self::readRaw($setting, $configFile, $readDatabase, 0));
+    }
+
+    public static function readTimezone(string $configFile, callable $readDatabase): string
+    {
+        $raw = self::readRaw('log_retention_timezone', $configFile, $readDatabase, LogRetentionPolicy::UNCONFIGURED_TIMEZONE);
+        return LogRetentionPolicy::normaliseSetting(LogRetentionPolicy::TIMEZONE_SETTING, $raw);
+    }
+
+    private static function readRaw(string $setting, string $configFile, callable $readDatabase, $default)
+    {
         $env = getenv('MISP_SETTING_MISP__' . $setting);
         if ($env !== false) {
             // Validate the original token, before EnvSetting can coerce it.
-            return LogRetentionPolicy::parse($env);
+            return $env;
         }
 
         clearstatcache(true, $configFile);
@@ -38,9 +49,9 @@ final class LogRetentionPolicyReader
         if (!empty($misp['system_setting_db'])) {
             $raw = $readDatabase('MISP.' . $setting);
             if ($raw !== null) {
-                return LogRetentionPolicy::parse(json_decode($raw, true, 16, JSON_THROW_ON_ERROR));
+                return json_decode($raw, true, 16, JSON_THROW_ON_ERROR);
             }
         }
-        return LogRetentionPolicy::parse(array_key_exists($setting, $misp) ? $misp[$setting] : 0);
+        return array_key_exists($setting, $misp) ? $misp[$setting] : $default;
     }
 }
