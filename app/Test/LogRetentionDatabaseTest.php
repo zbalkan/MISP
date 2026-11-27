@@ -170,6 +170,67 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testTimestampDistributionBenchmark(): void
+    {
+        $table = $this->table('access_logs');
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $rows = 20000;
+        foreach ([1, 20] as $stride) {
+            foreach ([10, 50, 90] as $expiredPercent) {
+                foreach (['ordered', 'interleaved'] as $distribution) {
+                    $this->pdo->exec("DELETE FROM $table");
+                    $expected = [];
+                    for ($offset = 0; $offset < $rows; $offset += 500) {
+                        $values = [];
+                        for ($i = $offset; $i < min($offset + 500, $rows); ++$i) {
+                            $id = 1 + $i * $stride;
+                            $expired = $distribution === 'ordered'
+                                ? $i < intdiv($rows * $expiredPercent, 100)
+                                : $i % 100 < $expiredPercent;
+                            $created = $expired ? '2000-01-01' : '2099-01-01';
+                            $values[] = "($id, '$created')";
+                            if (!$expired) {
+                                $expected[] = $id;
+                            }
+                        }
+                        $this->pdo->exec("INSERT INTO $table (id, created) VALUES " . implode(',', $values));
+                    }
+                    $db = $this->adapter('AccessLog', 'access_logs');
+                    $this->assertTrue($db->acquireLock());
+                    $lookups = 0;
+                    try {
+                        $high = $db->highWaterMark();
+                        $start = hrtime(true);
+                        $result = (new LogRetentionSweep())->run(0, $high, $cutoff,
+                            function ($cursor, $high) use ($db, &$lookups) {
+                                ++$lookups;
+                                return $db->nextId($cursor, $high);
+                            },
+                            [$db, 'processBatch'], static function () {}, [$db, 'ownsLock']);
+                        $elapsedMs = (hrtime(true) - $start) / 1e6;
+                    } finally {
+                        $db->releaseLock();
+                    }
+                    $this->assertTrue($result['complete']);
+                    $this->assertSame($rows - count($expected), $result['affected']);
+                    $this->assertSame($expected, $this->ids('access_logs'));
+                    fwrite(STDOUT, json_encode([
+                        'benchmark' => 'timestamp_distribution',
+                        'rows' => $rows,
+                        'id_stride' => $stride,
+                        'expired_percent' => $expiredPercent,
+                        'distribution' => $distribution,
+                        'high_water_mark' => $high,
+                        'batches' => $result['batches'],
+                        'lookups' => $lookups,
+                        'deleted' => $result['affected'],
+                        'elapsed_ms' => $elapsedMs,
+                    ], JSON_THROW_ON_ERROR) . PHP_EOL);
+                }
+            }
+        }
+    }
+
     public function testCheckpointPersistenceBenchmark(): void
     {
         $table = $this->table('access_logs');
