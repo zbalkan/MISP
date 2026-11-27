@@ -5,6 +5,8 @@ declare(strict_types=1);
 App::uses('Shell', 'Console');
 App::uses('AppShell', 'Console/Command');
 App::uses('Worker', 'Tools/BackgroundJobs');
+App::uses('LogRetentionDispatch', 'Tools');
+App::uses('LogRetentionDatabase', 'Tools');
 
 class SchedulerWorkerShell extends AppShell
 {
@@ -22,6 +24,8 @@ class SchedulerWorkerShell extends AppShell
     const DEFAULT_MAX_EXECUTION_TIME = 0; // unlimited
 
     const LOOP_INTERVAL = 10;
+
+    private $nextRetentionCheck = 0;
 
     /** Upper bound of the back-off applied while the database is unreachable. */
     const MAX_DB_BACKOFF = 60;
@@ -84,6 +88,7 @@ class SchedulerWorkerShell extends AppShell
                 continue;
             }
 
+            $this->checkLogRetention();
             $now = time();
 
             try {
@@ -112,6 +117,33 @@ class SchedulerWorkerShell extends AppShell
             }
 
             sleep(self::LOOP_INTERVAL);
+        }
+    }
+
+    private function checkLogRetention(): void
+    {
+        if (hrtime(true) < $this->nextRetentionCheck) {
+            return;
+        }
+        $this->nextRetentionCheck = hrtime(true) + 60_000_000_000;
+        try {
+            $database = new LogRetentionDatabase(ClassRegistry::init('AccessLog'));
+            LogRetentionDispatch::run(
+                APP . 'Config' . DS . 'config.php',
+                [$database, 'readPolicySetting'],
+                [$database, 'claimDailyDispatch'],
+                function () {
+                    $jobId = $this->Job->createJob('SYSTEM', Job::WORKER_DEFAULT, 'admin_action', 'enforceLogRetention', __('Starting configured log retention.'));
+                    try {
+                        $this->getBackgroundJobsTool()->enqueue(BackgroundJobsTool::DEFAULT_QUEUE, BackgroundJobsTool::CMD_ADMIN, ['enforceLogRetention', $jobId], true, $jobId);
+                    } catch (Throwable $e) {
+                        $this->Job->saveStatus($jobId, false, __('Retention enqueue outcome uncertain; inspect scheduler logs.'));
+                        throw $e;
+                    }
+                }
+            );
+        } catch (Throwable $e) {
+            CakeLog::error('Configured log retention dispatch failed: ' . $e->getMessage());
         }
     }
 

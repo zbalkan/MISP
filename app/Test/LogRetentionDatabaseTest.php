@@ -74,6 +74,19 @@ class LogRetentionDatabaseTest extends TestCase
         return array_map('intval', $this->pdo->query("SELECT id FROM " . $this->table($table) . " ORDER BY id")->fetchAll(PDO::FETCH_COLUMN));
     }
 
+    public function testDailyDispatchClaimPersistsAcrossSessions(): void
+    {
+        $a = $this->adapter('AccessLog', 'access_logs');
+        $b = $this->adapter('AccessLog', 'access_logs', $this->connect());
+        $this->assertTrue($a->claimDailyDispatch());
+        $this->assertFalse($b->claimDailyDispatch());
+        $this->pdo->exec("UPDATE " . $this->table('admin_settings') . " SET value = '0' WHERE setting = 'log_retention_next_dispatch'");
+        $this->assertTrue($b->claimDailyDispatch());
+        $this->assertFalse($a->claimDailyDispatch());
+        $this->pdo->exec("UPDATE " . $this->table('admin_settings') . " SET value = 'invalid' WHERE setting = 'log_retention_next_dispatch'");
+        $this->assertFalse($a->claimDailyDispatch());
+    }
+
     public function testBoundedDeletionAndDryRunAcrossAllTables(): void
     {
         $cutoff = new DateTimeImmutable('2026-01-01 00:00:00', new DateTimeZone('UTC'));
