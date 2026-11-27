@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/LogRetentionSweep.php';
 require_once __DIR__ . '/LogRetentionCleanupException.php';
+require_once __DIR__ . '/LogRetentionTopology.php';
 
 /**
  * Database operations for the three supported log tables.
@@ -67,6 +68,15 @@ final class LogRetentionDatabase
         }
         if ($this->locked) {
             throw new LogicException('Retention lock already acquired.');
+        }
+        $statement = $this->execute(
+            "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('wsrep_on', 'wsrep_provider', 'group_replication_group_name')",
+            []
+        );
+        try {
+            LogRetentionTopology::assertSupported($statement->fetchAll(PDO::FETCH_KEY_PAIR));
+        } finally {
+            $statement->closeCursor();
         }
         // MySQL named locks are recursive within one session. Do not allow
         // a second adapter sharing the PDO connection to acquire the same lock.
