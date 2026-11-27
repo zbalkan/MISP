@@ -3,7 +3,8 @@ App::uses('AppModel', 'Model');
 
 class Job extends AppModel
 {
-    const STATUS_WAITING = 1,
+    const STATUS_CREATED = 0,
+        STATUS_WAITING = 1,
         STATUS_RUNNING = 2,
         STATUS_FAILED = 3,
         STATUS_COMPLETED = 4;
@@ -112,7 +113,7 @@ class Job extends AppModel
     {
         $job = [
             'worker' => $worker,
-            'status' => 0,
+            'status' => self::STATUS_CREATED,
             'retries' => 0,
             'org_id' => $user === 'SYSTEM' ? 0 : $user['org_id'],
             'job_type' => $jobType,
