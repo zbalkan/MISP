@@ -125,6 +125,13 @@ class LogRetentionSettingsTest extends TestCase
             RetentionSettingsConfigure::$settings[$name] = 365;
             $this->assertIsString($shell->Server->serverSettingsEditValue('SYSTEM', ['name' => LogRetentionPolicy::TIMEZONE_SETTING], 'unconfigured', true, true));
             $this->assertSame([$name => 365], $shell->Server->saved);
+            $timezoneSetting = ['name' => LogRetentionPolicy::TIMEZONE_SETTING];
+            $this->assertSame('Disable audit and application log retention before clearing the writer timezone.',
+                $shell->Server->serverSettingsEditValue('SYSTEM', $timezoneSetting, 'unconfigured', true, true));
+            RetentionSettingsConfigure::$settings[$name] = 'invalid';
+            $this->assertSame('Correct invalid audit or application log retention periods before clearing the writer timezone.',
+                $shell->Server->serverSettingsEditValue('SYSTEM', $timezoneSetting, 'unconfigured', true, true));
+            RetentionSettingsConfigure::$settings[$name] = 365;
             // Recovery must permit disabling a period even with an invalid timezone.
             RetentionSettingsConfigure::$settings[LogRetentionPolicy::TIMEZONE_SETTING] = 'invalid';
             $shell->args = [$name, '0'];
