@@ -501,12 +501,31 @@ class LogRetentionDatabaseTest extends TestCase
         AdminSetting::writeInternalState($dialect, 'internal_test', 'first');
         AdminSetting::writeInternalState($dialect, 'internal_test', 'second');
         $this->assertSame('second', AdminSetting::readInternalState($dialect, 'internal_test'));
-        $this->pdo->beginTransaction();
-        try {
-            $this->expectException(RuntimeException::class);
-            AdminSetting::writeInternalState($dialect, 'internal_test', 'third');
-        } finally {
-            $this->pdo->rollBack();
+        $observer = new RetentionDatabaseTestModel('AccessLog', 'access_logs', $this->connect(), $this->prefix);
+        $observerDialect = $observer->getSqlDialect();
+        $table = $this->table('access_logs');
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2000-01-01')");
+        foreach ([false, true] as $commit) {
+            $this->pdo->beginTransaction();
+            try {
+                $this->pdo->exec("DELETE FROM $table WHERE id = 1");
+                AdminSetting::writeInternalState($dialect, 'internal_test', 'third');
+                $this->assertTrue($this->pdo->inTransaction());
+                $this->assertSame('third', AdminSetting::readInternalState($dialect, 'internal_test'));
+                $this->assertSame('second', AdminSetting::readInternalState($observerDialect, 'internal_test'));
+                $this->assertSame(1, (int)$observer->getConnection()->query("SELECT COUNT(*) FROM $table")->fetchColumn());
+                if ($commit) {
+                    $this->pdo->commit();
+                } else {
+                    $this->pdo->rollBack();
+                }
+            } finally {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+            }
+            $this->assertSame($commit ? 'third' : 'second', AdminSetting::readInternalState($observerDialect, 'internal_test'));
+            $this->assertSame($commit ? 0 : 1, (int)$observer->getConnection()->query("SELECT COUNT(*) FROM $table")->fetchColumn());
         }
     }
 
