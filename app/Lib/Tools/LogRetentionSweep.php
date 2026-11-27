@@ -44,6 +44,9 @@ final class LogRetentionSweep
         $batches = 0;
         while ($cursor < $highWaterMark && $canContinue()) {
             $first = $nextId($cursor, $highWaterMark);
+            if (!$canContinue()) {
+                break;
+            }
             if ($first === null) {
                 if (!$dryRun) {
                     $saveCursor($highWaterMark);
@@ -56,9 +59,6 @@ final class LogRetentionSweep
             }
             // Subtract before adding to avoid overflowing at the high-water mark.
             $last = $first + min($this->batchSize - 1, $highWaterMark - $first);
-            if (!$canContinue()) {
-                break;
-            }
             $count = $processBatch($first, $last, $cutoff, $dryRun);
             if (!is_int($count) || $count < 0 || $count > $last - $first + 1) {
                 throw new UnexpectedValueException('Invalid retention batch result.');
