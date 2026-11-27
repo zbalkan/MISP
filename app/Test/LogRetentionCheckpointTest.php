@@ -8,6 +8,47 @@ require_once __DIR__ . '/../Lib/Tools/LogRetentionCheckpoint.php';
 
 class LogRetentionCheckpointTest extends TestCase
 {
+    public function testVersionedProgressCompatibility(): void
+    {
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $legacy = json_decode(LogRetentionCheckpoint::encode(30, $cutoff, 10, 100), true);
+        $legacy['deletedRows'] = 'unexpected';
+        $legacy['completedBatches'] = -1;
+        $state = LogRetentionCheckpoint::resume(json_encode($legacy), 30, $cutoff, 100);
+        $this->assertSame(0, $state['deletedRows']);
+        $this->assertSame(0, $state['completedBatches']);
+
+        $raw = LogRetentionCheckpoint::encode(30, $cutoff, 10, 100, 7, 2);
+        $state = LogRetentionCheckpoint::resume($raw, 30, $cutoff, 100);
+        $this->assertSame(7, $state['deletedRows']);
+        $this->assertSame(2, $state['completedBatches']);
+        $this->assertSame('partial', json_decode($raw, true)['status']);
+        $complete = LogRetentionCheckpoint::encode(30, $cutoff, 100, 100, 80, 5);
+        $this->assertSame('complete', json_decode($complete, true)['status']);
+        $this->assertNull(LogRetentionCheckpoint::resume($complete, 30, $cutoff, 100));
+    }
+
+    public function testMalformedVersionTwoProgressRestarts(): void
+    {
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $valid = json_decode(LogRetentionCheckpoint::encode(30, $cutoff, 10, 100, 7, 2), true);
+        foreach (['deletedRows', 'completedBatches'] as $field) {
+            foreach ([-1, '2', 1.5, false, null, []] as $invalid) {
+                $state = $valid;
+                $state[$field] = $invalid;
+                $this->assertNull(LogRetentionCheckpoint::resume(json_encode($state), 30, $cutoff, 100));
+            }
+            $state = $valid;
+            unset($state[$field]);
+            $this->assertNull(LogRetentionCheckpoint::resume(json_encode($state), 30, $cutoff, 100));
+        }
+        foreach (['complete', 'running', null] as $invalid) {
+            $state = $valid;
+            $state['status'] = $invalid;
+            $this->assertNull(LogRetentionCheckpoint::resume(json_encode($state), 30, $cutoff, 100));
+        }
+    }
+
     public function testResumePreservesOriginalCutoffAndBounds(): void
     {
         $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
