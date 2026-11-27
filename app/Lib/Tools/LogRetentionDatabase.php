@@ -34,6 +34,9 @@ final class LogRetentionDatabase
         if ($this->connection->getAttribute(PDO::ATTR_PERSISTENT)) {
             throw new RuntimeException('Retention requires a non-persistent database session.');
         }
+        if (!$this->connection->getAttribute(PDO::ATTR_AUTOCOMMIT)) {
+            throw new RuntimeException('Retention requires an autocommit database session.');
+        }
         $database = $this->scalar('SELECT DATABASE()', []);
         if (!is_string($database) || $database === '') {
             throw new RuntimeException('Retention database name unavailable.');
@@ -45,6 +48,11 @@ final class LogRetentionDatabase
     {
         if ($this->locked) {
             throw new LogicException('Retention lock already acquired.');
+        }
+        // MySQL named locks are recursive within one session. Do not allow
+        // a second adapter sharing the PDO connection to acquire the same lock.
+        if ($this->scalar('SELECT IS_USED_LOCK(?)', [$this->lockName]) !== null) {
+            return false;
         }
         $result = $this->scalar('SELECT GET_LOCK(?, 0)', [$this->lockName]);
         if ($result === 0 || $result === '0') {
