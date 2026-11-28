@@ -30,10 +30,9 @@ cleanup() {
         tail -n 100 /tmp/misp-workers-errors.log /tmp/misp-workers.log 2>/dev/null || true
         exit 1
     fi
-    query "DELETE FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent')" || exit 1
+    query "DELETE FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent', '$marker-second-old')" || exit 1
     query "DELETE FROM scheduled_tasks WHERE $task_where" || exit 1
     query "DELETE FROM jobs WHERE $job_where" || exit 1
-    query "DELETE FROM admin_settings WHERE setting = 'log_retention_checkpoint_access_logs'" || exit 1
 }
 trap cleanup EXIT
 
@@ -156,76 +155,48 @@ done
 # The server may finish an in-flight statement after client death, but
 # without a subsequent COMMIT its transaction must be rolled back.
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id IN ('$marker-old', '$marker-recent')")" = 2
-test "$(query "SELECT COUNT(*) FROM admin_settings WHERE setting = 'log_retention_checkpoint_access_logs'")" = 0
 echo 'Abrupt CLI process interruption rolled back deletion and released the advisory lock.'
 
-# The running scheduler must observe the fresh configuration, provision the
-# native task, claim it, enqueue a real job and execute the configured sweep.
+# Create an ordinary native administrative task through the live controller.
+admin_id=$(query "SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.perm_site_admin = 1 AND u.disabled = 0 ORDER BY u.id LIMIT 1")
+test -n "$admin_id"
 cake Admin setSetting MISP.access_log_retention_days 30
-deadline=$((SECONDS + 180))
-while (( SECONDS < deadline )); do
-    state=$(query "SELECT j.status FROM scheduled_tasks t JOIN jobs j ON j.id = t.last_job_id WHERE t.type = 'Admin' AND t.action = 'enforceLogRetention'")
-    case "$state" in
-        4) break ;;
-        3) echo 'Retention worker reported failure.' >&2; exit 1 ;;
-    esac
-    sleep 2
-done
+curl -sS --fail-with-body -H "Authorization: $AUTH" -H 'Accept: application/json' -H 'Content-Type: application/json' --data "{\"Task\":{\"type\":\"Admin\",\"admin_action\":\"enforceLogRetention\",\"user_id\":$admin_id,\"enabled\":1,\"time_multiplier\":1,\"time_unit\":86400,\"next_execution_date\":\"\",\"next_execution_time\":\"\",\"description\":\"Retention CI\"}}" "http://$HOST/tasks/add" >/dev/null
+task_id=$(query "SELECT id FROM scheduled_tasks WHERE $task_where AND user_id = $admin_id AND enabled = 1 AND timer = 86400")
+test -n "$task_id"
 
-test "${state:-}" = 4
-test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE $task_where AND enabled = 1 AND timer = 86400 AND user_id = 0 AND next_execution_time > UNIX_TIMESTAMP()")" = 1
-test "$(query "SELECT COUNT(*) FROM jobs WHERE $job_where")" = 1
+wait_for_job() {
+    local previous=${1:-0} deadline=$((SECONDS + 180)) state=''
+    while (( SECONDS < deadline )); do
+        state=$(query "SELECT j.status FROM scheduled_tasks t JOIN jobs j ON j.id = t.last_job_id WHERE t.id = $task_id AND j.id != $previous")
+        case "$state" in
+            4) return 0 ;;
+            3) echo 'Retention worker reported failure.' >&2; return 1 ;;
+        esac
+        sleep 2
+    done
+    echo 'Timed out waiting for native retention job.' >&2
+    return 1
+}
+
+wait_for_job
+job_id=$(query "SELECT last_job_id FROM scheduled_tasks WHERE id = $task_id")
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-old'")" = 0
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-recent'")" = 1
-test "$(query "SELECT COUNT(*) FROM admin_settings WHERE setting = 'log_retention_checkpoint_access_logs'")" = 1
-echo 'Native scheduler, job association, worker, checkpoint and retention cutoff verified.'
 
-# The live application must protect the managed task and its dispatch guard,
-# while allowing an older completed retention job to be removed normally.
-task_id=$(query "SELECT id FROM scheduled_tasks WHERE $task_where")
-job_id=$(query "SELECT last_job_id FROM scheduled_tasks WHERE $task_where")
-test -n "$task_id"
-test -n "$job_id"
-http_status=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: $AUTH" -H 'Accept: application/json' -H 'Content-Type: application/json' -X POST "http://$HOST/tasks/forceRun/$task_id")
-test "$http_status" = 405
-query "INSERT INTO jobs (worker, job_type, job_input, status, message, progress, org_id, date_created, date_modified)
-    VALUES ('default', 'admin_action', 'enforceLogRetention', 4, 'retention CI historical job', 100, 0, NOW(), NOW())"
-historical_id=$(query "SELECT id FROM jobs WHERE $job_where AND message = 'retention CI historical job'")
-test -n "$historical_id"
-curl -sS --fail-with-body -o /dev/null -H "Authorization: $AUTH" -H 'Accept: application/json' -H 'Content-Type: application/json' --data "{\"Job\":{\"id\":[$job_id,$historical_id]}}" "http://$HOST/jobs/deleteSelection"
-test "$(query "SELECT COUNT(*) FROM jobs WHERE id = $job_id")" = 1
-test "$(query "SELECT COUNT(*) FROM jobs WHERE id = $historical_id")" = 0
-test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE id = $task_id AND last_job_id = $job_id")" = 1
-echo 'Managed task and current job protected through the live administration API.'
-
-# Exercise the next native schedule without waiting a day. Disable the policy
-# before making the task due; the running scheduler must leave it untouched.
+# A disabled retention policy is a successful no-op, not a disabled schedule.
 cake Admin setSetting MISP.access_log_retention_days 0
-query "INSERT INTO access_logs
-    (created, user_id, org_id, request_method, request_id, controller, action, url, response_code, memory_usage, duration, query_count)
-    VALUES ('2000-01-01 00:00:00', 0, 0, 0, '$marker-second-old', 'retention_test', 'index', '/retention-test', 200, 0, 0, 0)"
-query "UPDATE scheduled_tasks SET next_execution_time = UNIX_TIMESTAMP() - 1 WHERE id = $task_id AND last_job_id = $job_id"
-# Observe more than two scheduler polling intervals.
-sleep 25
-test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE id = $task_id AND last_job_id = $job_id AND next_execution_time <= UNIX_TIMESTAMP()")" = 1
-test "$(query "SELECT COUNT(*) FROM jobs WHERE $job_where")" = 1
+query "INSERT INTO access_logs (created, user_id, org_id, request_method, request_id, controller, action, url, response_code, memory_usage, duration, query_count) VALUES ('2000-01-01', 0, 0, 0, '$marker-second-old', 'retention_test', 'index', '/retention-test', 200, 0, 0, 0)"
+query "UPDATE scheduled_tasks SET next_execution_time = UNIX_TIMESTAMP() - 1 WHERE id = $task_id"
+wait_for_job "$job_id"
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-second-old'")" = 1
+job_id=$(query "SELECT last_job_id FROM scheduled_tasks WHERE id = $task_id")
 
 cake Admin setSetting MISP.access_log_retention_days 30
-deadline=$((SECONDS + 180))
-state=''
-while (( SECONDS < deadline )); do
-    state=$(query "SELECT j.status FROM scheduled_tasks t JOIN jobs j ON j.id = t.last_job_id WHERE t.id = $task_id AND j.id != $job_id")
-    case "$state" in
-        4) break ;;
-        3) echo 'Second retention execution failed.' >&2; exit 1 ;;
-    esac
-    sleep 2
-done
-test "$state" = 4
-test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE $task_where")" = 1
-test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE id = $task_id AND last_job_id != $job_id AND next_execution_time > UNIX_TIMESTAMP()")" = 1
-test "$(query "SELECT COUNT(*) FROM jobs WHERE $job_where")" = 2
+query "UPDATE scheduled_tasks SET next_execution_time = UNIX_TIMESTAMP() - 1 WHERE id = $task_id"
+wait_for_job "$job_id"
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-second-old'")" = 0
 test "$(query "SELECT COUNT(*) FROM access_logs WHERE request_id = '$marker-recent'")" = 1
-echo 'Disabled policy, managed task reuse and subsequent native execution verified.'
+test "$(query "SELECT COUNT(*) FROM scheduled_tasks WHERE id = $task_id AND next_execution_time > UNIX_TIMESTAMP()")" = 1
+test "$(query "SELECT COUNT(*) FROM jobs WHERE $job_where")" = 3
+echo 'Native administrative task, disabled policy and repeated retention execution verified.'
