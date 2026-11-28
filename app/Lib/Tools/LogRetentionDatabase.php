@@ -109,7 +109,8 @@ final class LogRetentionDatabase
         if ($this->driver === 'pgsql') {
             // Advisory locks are database-local. Use the relation OID to
             // identify the same table even through different search paths.
-            $oid = $this->scalar('SELECT CAST(to_regclass(?) AS oid)', [$this->table]);
+            $relation = $provisioning ? $db->fullTableName('scheduled_tasks') : $this->table;
+            $oid = $this->scalar('SELECT CAST(to_regclass(?) AS oid)', [$relation]);
             if ($oid === null || $oid === false) {
                 throw new RuntimeException('Retention table is unavailable.');
             }
