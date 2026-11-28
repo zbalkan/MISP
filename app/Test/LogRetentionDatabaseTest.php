@@ -107,6 +107,12 @@ class LogRetentionDatabaseTest extends TestCase
         $a = $this->nativeRetentionTask($this->pdo);
         $b = $this->nativeRetentionTask($this->connect());
         $snapshot = $this->pdo->query("SELECT * FROM $table")->fetch(PDO::FETCH_ASSOC);
+        $this->pdo->exec("INSERT INTO $table VALUES (2, 'Admin', 'enforceLogRetention', 0, TRUE, 86400, 100, NULL, '', NULL)");
+        $duplicate = $this->pdo->query("SELECT * FROM $table WHERE id = 2")->fetch(PDO::FETCH_ASSOC);
+        $this->assertNull($a->claimRetentionExecution($snapshot, 100));
+        $this->assertNull($b->claimRetentionExecution($duplicate, 100));
+        $this->assertSame(2, (int)$this->pdo->query("SELECT COUNT(*) FROM $table WHERE next_execution_time = 100 AND last_job_id IS NULL")->fetchColumn());
+        $this->pdo->exec("DELETE FROM $table WHERE id = 2");
         $claim = $a->claimRetentionExecution($snapshot, 100);
         $this->assertSame(86500, $claim);
         $this->assertNull($b->claimRetentionExecution($snapshot, 100));
