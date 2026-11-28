@@ -203,7 +203,7 @@ final class LogRetentionDatabase
         return $local->format('Y-m-d H:i:s.u');
     }
 
-    public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun): int
+    public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun, ?string $checkpoint = null): int
     {
         if ($first < 1 || $last < $first || $last - $first >= LogRetentionSweep::MAX_BATCH_SIZE) {
             throw new InvalidArgumentException('Invalid retention batch bounds.');
@@ -231,6 +231,12 @@ final class LogRetentionDatabase
             $statement->closeCursor();
             if ($count < 0 || $count > $last - $first + 1) {
                 throw new RuntimeException('Unexpected retention deletion count.');
+            }
+            if ($checkpoint !== null) {
+                $this->assertSession();
+                $table = $this->dialect->getDataSource()->fullTableName('admin_settings');
+                $sql = $this->dialect->upsert("INSERT INTO $table (setting, value) VALUES (?, ?)", ['setting'], ['value']);
+                $this->execute($sql, [$this->checkpointKey, $checkpoint])->closeCursor();
             }
             if (!$this->connection->commit()) {
                 throw new RuntimeException('Could not commit retention transaction.');

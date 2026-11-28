@@ -85,12 +85,16 @@ final class LogRetentionRunner
                     $firstBatch = false;
                     return $database->nextId($cursor, $high);
                 },
-                [$database, 'processBatch'],
+                function ($first, $last, $cutoff, $dryRun) use ($database, $days, $high) {
+                    $checkpoint = $dryRun ? null : LogRetentionCheckpoint::encode($days, $cutoff, $last, $high);
+                    return $database->processBatch($first, $last, $cutoff, $dryRun, $checkpoint);
+                },
                 function ($cursor) use ($database, $days, $cutoff, $high) {
                     $database->saveCheckpoint(LogRetentionCheckpoint::encode($days, $cutoff, $cursor, $high));
                 },
                 $canContinue,
-                $dryRun
+                $dryRun,
+                true
             );
             $result['status'] = $blocked ? 'blocked' : ($result['complete'] ? 'complete' : 'partial');
             $result['reason'] = $reason;

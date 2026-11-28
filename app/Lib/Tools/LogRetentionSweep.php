@@ -38,7 +38,8 @@ final class LogRetentionSweep
         callable $processBatch,
         callable $saveCursor,
         callable $canContinue,
-        bool $dryRun = false
+        bool $dryRun = false,
+        bool $atomicCheckpoint = false
     ): array {
         if ($cursor < 0 || $highWaterMark < $cursor) {
             throw new InvalidArgumentException('Invalid retention sweep bounds.');
@@ -66,7 +67,7 @@ final class LogRetentionSweep
             if (!is_int($count) || $count < 0 || $count > $last - $first + 1) {
                 throw new UnexpectedValueException('Invalid retention batch result.');
             }
-            if (!$dryRun) {
+            if (!$dryRun && !$atomicCheckpoint) {
                 $saveCursor($last);
             }
             $cursor = $last;

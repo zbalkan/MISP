@@ -183,11 +183,14 @@ class RetentionRunnerTestDatabase
     public function loadCheckpoint(): ?string { return $this->checkpoint; }
     public function saveCheckpoint(string $value): void { $this->checkpoint = $value; }
     public function nextId(int $cursor, int $high): ?int { return $cursor < $high ? $cursor + 1 : null; }
-    public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun): int {
+    public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun, ?string $checkpoint = null): int {
         if ($this->batchFailure !== null) {
             throw $this->batchFailure;
         }
         ++$this->batches;
+        if ($checkpoint !== null) {
+            $this->checkpoint = $checkpoint;
+        }
         return 1;
     }
 }
