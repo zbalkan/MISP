@@ -41,10 +41,9 @@ final class LogRetentionRunner
             $timezone = $database->storageTimezone();
             $cutoff = LogRetentionPolicy::cutoff($days, $this->clock->now()->setTimezone($timezone));
             $high = $database->highWaterMark();
-            $cursor = 0;
             $reason = null;
             $blocked = false;
-            $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $timezone, $started, &$reason, &$blocked) {
+            $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $timezone, &$reason, &$blocked) {
                 if (!$database->ownsLock()) {
                     throw new RuntimeException('Retention lock lost.');
                 }
@@ -65,22 +64,7 @@ final class LogRetentionRunner
                 }
                 return true;
             };
-            $firstBatch = true;
-            $result = (new LogRetentionSweep())->run(
-                $cursor,
-                $high,
-                $cutoff,
-                function ($cursor, $high) use ($database, $delayMicroseconds, &$firstBatch) {
-                    if (!$firstBatch && $delayMicroseconds > 0) {
-                        usleep($delayMicroseconds);
-                    }
-                    $firstBatch = false;
-                    return $database->nextId($cursor, $high);
-                },
-                [$database, 'processBatch'],
-                $canContinue,
-                $dryRun
-            );
+            $result = $this->sweep($database, $high, $cutoff, $canContinue, $dryRun, $delayMicroseconds);
             $result['status'] = $blocked ? 'blocked' : ($result['complete'] ? 'complete' : 'partial');
             $result['reason'] = $reason;
             $result['days'] = $days;
@@ -110,19 +94,10 @@ final class LogRetentionRunner
             throw new RuntimeException('Another retention operation owns the database lock.');
         }
         return $this->withOwnedLock($database, function () use ($database, $cutoff, $dryRun, $started) {
-            $firstBatch = true;
-            $result = (new LogRetentionSweep())->run(
-                0,
+            $result = $this->sweep(
+                $database,
                 $database->highWaterMark(),
                 $cutoff,
-                function ($cursor, $high) use ($database, &$firstBatch) {
-                    if (!$firstBatch) {
-                        usleep(200000);
-                    }
-                    $firstBatch = false;
-                    return $database->nextId($cursor, $high);
-                },
-                [$database, 'processBatch'],
                 function () use ($database, $cutoff) {
                     if (!$database->ownsLock()) {
                         throw new RuntimeException('Retention lock lost.');
@@ -132,7 +107,8 @@ final class LogRetentionRunner
                     }
                     return true;
                 },
-                $dryRun
+                $dryRun,
+                200000
             );
             $result['status'] = 'complete';
             $result['reason'] = null;
@@ -140,6 +116,26 @@ final class LogRetentionRunner
             $result['durationSeconds'] = (hrtime(true) - $started) / 1e9;
             return $result;
         });
+    }
+
+    private function sweep($database, int $high, DateTimeImmutable $cutoff, callable $canContinue, bool $dryRun, int $delayMicroseconds): array
+    {
+        $firstBatch = true;
+        return (new LogRetentionSweep())->run(
+            0,
+            $high,
+            $cutoff,
+            function ($cursor, $high) use ($database, $delayMicroseconds, &$firstBatch) {
+                if (!$firstBatch && $delayMicroseconds > 0) {
+                    usleep($delayMicroseconds);
+                }
+                $firstBatch = false;
+                return $database->nextId($cursor, $high);
+            },
+            [$database, 'processBatch'],
+            $canContinue,
+            $dryRun
+        );
     }
 
     private function withOwnedLock($database, callable $operation)
