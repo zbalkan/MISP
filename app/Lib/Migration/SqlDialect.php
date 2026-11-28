@@ -331,6 +331,6 @@ class SqlDialect
      */
     private function isMysql()
     {
-        return $this->flavour() === self::FLAVOUR_MYSQL;
+        return $this->db instanceof Mysql;
     }
 }

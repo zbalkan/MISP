@@ -16,44 +16,6 @@ class AdminSetting extends AppModel
 
     public $validate = array('setting' => 'isUnique');
 
-    /**
-     * Read internal machine state on the caller's datasource session.
-     * Unlike changeSetting(), these operations intentionally do not invoke
-     * model callbacks or audit logging. Do not use them for user settings.
-     */
-    public static function readInternalState(SqlDialect $dialect, string $setting): ?string
-    {
-        $db = $dialect->getDataSource();
-        $table = $db->fullTableName('admin_settings');
-        $statement = $db->getConnection()->prepare("SELECT value FROM $table WHERE setting = ?");
-        if (!$statement || !$statement->execute([$setting])) {
-            throw new RuntimeException('Could not read internal administrative state.');
-        }
-        try {
-            $value = $statement->fetchColumn();
-            return $value === false ? null : (string)$value;
-        } finally {
-            $statement->closeCursor();
-        }
-    }
-
-    /** Atomic upsert; caller is responsible for any higher-level locking. */
-    public static function writeInternalState(SqlDialect $dialect, string $setting, string $value): void
-    {
-        $db = $dialect->getDataSource();
-        $pdo = $db->getConnection();
-        if ($pdo->inTransaction()) {
-            throw new RuntimeException('Internal state requires an autocommit session.');
-        }
-        $table = $db->fullTableName('admin_settings');
-        $sql = $dialect->upsert("INSERT INTO $table (setting, value) VALUES (?, ?)", ['setting'], ['value']);
-        $statement = $pdo->prepare($sql);
-        if (!$statement || !$statement->execute([$setting, $value])) {
-            throw new RuntimeException('Could not persist internal administrative state.');
-        }
-        $statement->closeCursor();
-    }
-
     public function changeSetting($setting, $value = false)
     {
         $existing = $this->find('first', array(

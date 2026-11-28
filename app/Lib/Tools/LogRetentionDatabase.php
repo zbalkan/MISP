@@ -23,7 +23,6 @@ final class LogRetentionDatabase
     private $storageTimezone;
     private $model;
     private $table;
-    private $checkpointKey;
     private $unusable = false;
 
     /**
@@ -41,7 +40,6 @@ final class LogRetentionDatabase
         $db = $model->getDataSource();
         $this->connection = $db->getConnection();
         $this->table = $db->fullTableName($model);
-        $this->checkpointKey = 'log_retention_checkpoint_' . $model->table;
     }
 
     private function initialiseLock(): void
@@ -54,7 +52,6 @@ final class LogRetentionDatabase
             throw new RuntimeException('Unsupported retention database driver.');
         }
         $this->dialect = $model->getSqlDialect();
-        App::uses('AdminSetting', 'Model');
         if ($this->dialect->getDataSource() !== $db || $this->dialect->flavour() !== $this->driver) {
             throw new RuntimeException('Retention datasource dialect does not match its connection.');
         }
@@ -71,19 +68,18 @@ final class LogRetentionDatabase
         if (!is_string($database) || $database === '') {
             throw new RuntimeException('Retention database name unavailable.');
         }
-        // Checkpoint keys are scoped to the datasource's standard table
-        // prefix/schema. Do not allow a model-specific override to share them.
+        // Require the datasource's standard table prefix and schema.
         if ($db->fullTableName($model, false, true) !== $db->fullTableName($model->table, false, true)) {
             throw new RuntimeException('Retention requires the datasource log table prefix and schema.');
         }
         if ($this->driver === 'mysql') {
             $this->mysqlDatabase = $database;
-            $this->mysqlTables = [$db->fullTableName($model, false, false), $db->fullTableName('admin_settings', false, false)];
-            foreach ([$model, 'admin_settings'] as $table) {
+            $this->mysqlTables = [$db->fullTableName($model, false, false)];
+            foreach ([$model] as $table) {
                 $name = $db->fullTableName($table, false, false);
                 $qualified = $db->fullTableName($table, false, true);
                 if ($qualified !== $name && $qualified !== $database . '.' . $name) {
-                    throw new RuntimeException('Retention requires log and checkpoint tables in the current database.');
+                    throw new RuntimeException('Retention requires log table in the current database.');
                 }
             }
         }
@@ -108,7 +104,7 @@ final class LogRetentionDatabase
                     $statement->closeCursor();
                 }
                 if (count($engines) !== 1 || strcasecmp($engines[0] ?? '', 'InnoDB') !== 0) {
-                    throw new RuntimeException('Retention requires transactional InnoDB log and checkpoint tables.');
+                    throw new RuntimeException('Retention requires a transactional InnoDB log table.');
                 }
             }
         }
@@ -139,24 +135,6 @@ final class LogRetentionDatabase
     {
         $this->assertSession();
         return LogRetentionPolicyReader::readDatabaseSetting($this->model, $setting);
-    }
-
-    public function loadCheckpoint(): ?string
-    {
-        if (!$this->ownsLock()) {
-            throw new RuntimeException('Retention checkpoint requires an owned database lock.');
-        }
-        $this->assertSession();
-        return AdminSetting::readInternalState($this->dialect, $this->checkpointKey);
-    }
-
-    public function saveCheckpoint(string $value): void
-    {
-        if (!$this->ownsLock() || $this->connection->inTransaction()) {
-            throw new RuntimeException('Retention checkpoint requires an owned lock and no active transaction.');
-        }
-        $this->assertSession();
-        AdminSetting::writeInternalState($this->dialect, $this->checkpointKey, $value);
     }
 
     public function highWaterMark(): int
@@ -203,7 +181,7 @@ final class LogRetentionDatabase
         return $local->format('Y-m-d H:i:s.u');
     }
 
-    public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun, ?string $checkpoint = null): int
+    public function processBatch(int $first, int $last, DateTimeImmutable $cutoff, bool $dryRun): int
     {
         if ($first < 1 || $last < $first || $last - $first >= LogRetentionSweep::MAX_BATCH_SIZE) {
             throw new InvalidArgumentException('Invalid retention batch bounds.');
@@ -231,12 +209,6 @@ final class LogRetentionDatabase
             $statement->closeCursor();
             if ($count < 0 || $count > $last - $first + 1) {
                 throw new RuntimeException('Unexpected retention deletion count.');
-            }
-            if ($checkpoint !== null) {
-                $this->assertSession();
-                $table = $this->dialect->getDataSource()->fullTableName('admin_settings');
-                $sql = $this->dialect->upsert("INSERT INTO $table (setting, value) VALUES (?, ?)", ['setting'], ['value']);
-                $this->execute($sql, [$this->checkpointKey, $checkpoint])->closeCursor();
             }
             if (!$this->connection->commit()) {
                 throw new RuntimeException('Could not commit retention transaction.');
