@@ -74,7 +74,7 @@ final class LogRetentionService
                 } elseif ($logTimezone === null) {
                     throw new LogRetentionConfigurationException('Configure the log writer timezone before enabling local log retention.');
                 }
-                $database = new LogRetentionDatabase($model, $logTimezone);
+                $database->setWriterTimezone($logTimezone);
             }
             $result = (new LogRetentionRunner())->run($database, static function () use ($database, $setting, $configFile, $model, $configuredTimezone) {
                 $days = LogRetentionPolicyReader::read($setting, $configFile, [$database, 'readPolicySetting']);
@@ -112,7 +112,7 @@ final class LogRetentionService
                 if ($logTimezone !== null && $logTimezone->getName() !== $configuredTimezone) {
                     throw new InvalidArgumentException('CLI writer timezone conflicts with configured retention timezone.');
                 }
-                $database = new LogRetentionDatabase($model, new DateTimeZone($configuredTimezone));
+                $database->setWriterTimezone(new DateTimeZone($configuredTimezone));
             }
         }
         $cutoff = $legacyCutoff ?? LogRetentionPolicy::cutoff($days, (new SystemClock())->now()->setTimezone($database->storageTimezone()));
