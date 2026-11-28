@@ -123,11 +123,13 @@ class SchedulerWorkerShell extends AppShell
         }
     }
 
-    private function retentionEnabled(LogRetentionDatabase $database): bool
+    private function retentionEnabled(): bool
     {
         return LogRetentionPolicyReader::anyEnabled(
             APP . 'Config' . DS . 'config.php',
-            [$database, 'readPolicySetting'],
+            function (string $setting): ?string {
+                return LogRetentionPolicyReader::readDatabaseSetting($this->Task, $setting);
+            },
             static function ($name, $error) {
                 CakeLog::error("Log retention policy $name is blocked: " . $error->getMessage());
             }
@@ -141,8 +143,11 @@ class SchedulerWorkerShell extends AppShell
         }
         $this->nextRetentionCheck = hrtime(true) + 60_000_000_000;
         try {
+            if (!$this->retentionEnabled()) {
+                return;
+            }
             $database = new LogRetentionDatabase(ClassRegistry::init('AccessLog'), null, true);
-            if (!$this->retentionEnabled($database) || !$database->acquireLock()) {
+            if (!$database->acquireLock()) {
                 return;
             }
             try {
@@ -222,8 +227,7 @@ class SchedulerWorkerShell extends AppShell
         $this->logMessage('info', $task['id'], "processing task: {$task['type']}");
 
         if (Task::isManagedRetention($task)) {
-            $database = new LogRetentionDatabase(ClassRegistry::init('AccessLog'));
-            if (!$this->retentionEnabled($database)) {
+            if (!$this->retentionEnabled()) {
                 return;
             }
             $claim = $this->Task->claimRetentionExecution($task, time());
