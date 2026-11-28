@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/LogRetentionSweep.php';
 require_once __DIR__ . '/LogRetentionPolicy.php';
+require_once __DIR__ . '/LogRetentionPolicyReader.php';
 require_once __DIR__ . '/LogRetentionCleanupException.php';
 require_once __DIR__ . '/LogRetentionTopology.php';
 
@@ -24,7 +25,6 @@ final class LogRetentionDatabase
     private $model;
     private $table;
     private $lockName;
-    private $settingsTable;
     private $checkpointKey;
     private $locked = false;
     private $provisioning;
@@ -49,7 +49,6 @@ final class LogRetentionDatabase
         $db = $model->getDataSource();
         $this->connection = $db->getConnection();
         $this->table = $db->fullTableName($model);
-        $this->settingsTable = $db->fullTableName('system_settings');
         $this->checkpointKey = 'log_retention_checkpoint_' . $model->table;
     }
 
@@ -220,18 +219,10 @@ final class LogRetentionDatabase
 
     public function readPolicySetting(string $setting): ?string
     {
-        if (!LogRetentionPolicy::isSetting($setting)) {
-            throw new InvalidArgumentException('Unknown retention setting.');
+        if ($this->model->getDataSource()->getConnection() !== $this->connection) {
+            throw new RuntimeException('Retention datasource connection changed.');
         }
-        $value = $this->scalar("SELECT value FROM {$this->settingsTable} WHERE setting = ?", [$setting]);
-        if (is_resource($value)) {
-            $bytes = stream_get_contents($value);
-            if ($bytes === false) {
-                throw new RuntimeException('Could not read retention setting bytes.');
-            }
-            $value = $bytes;
-        }
-        return $value === false ? null : (string)$value;
+        return LogRetentionPolicyReader::readDatabaseSetting($this->model, $setting);
     }
 
     public function loadCheckpoint(): ?string
