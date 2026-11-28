@@ -12,6 +12,29 @@ require_once __DIR__ . '/LogRetentionConfigurationException.php';
  */
 final class LogRetentionPolicyReader
 {
+    public static function readDatabaseSetting($model, string $setting): ?string
+    {
+        if (!LogRetentionPolicy::isSetting($setting)) {
+            throw new InvalidArgumentException('Unknown retention setting.');
+        }
+        $db = $model->getDataSource();
+        $table = $db->fullTableName('system_settings');
+        $statement = $db->getConnection()->prepare("SELECT value FROM $table WHERE setting = ?");
+        try {
+            $statement->execute([$setting]);
+            $value = $statement->fetchColumn();
+            if (is_resource($value)) {
+                $value = stream_get_contents($value);
+                if ($value === false) {
+                    throw new RuntimeException('Could not read retention setting bytes.');
+                }
+            }
+            return $value === false ? null : (string)$value;
+        } finally {
+            $statement->closeCursor();
+        }
+    }
+
     public static function read(string $setting, string $configFile, callable $readDatabase): int
     {
         if (!in_array('MISP.' . $setting, LogRetentionPolicy::DAY_SETTINGS, true)) {
