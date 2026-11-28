@@ -83,6 +83,7 @@ final class LogRetentionService
                 }
             }
             $database = new LogRetentionDatabase($model, $logTimezone);
+            $readSetting = [$database, 'readPolicySetting'];
             $result = (new LogRetentionRunner())->run($database, static function () use ($readSetting, $setting, $configFile, $model, $configuredTimezone) {
                 $days = LogRetentionPolicyReader::read($setting, $configFile, $readSetting);
                 if ($days > 0 && $model->alias !== 'AccessLog' &&
