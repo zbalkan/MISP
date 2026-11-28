@@ -551,6 +551,19 @@ class LogRetentionDatabaseTest extends TestCase
         }
     }
 
+    public function testProvisioningAndDisabledPolicyDoNotRequireTransactionalAccessLog(): void
+    {
+        $table = $this->table('access_logs');
+        $this->pdo->exec("ALTER TABLE $table ENGINE=MyISAM");
+        $db = $this->adapter('AccessLog', 'access_logs');
+        $this->assertSame('disabled', (new LogRetentionRunner())->run($db, static function () { return 0; })['status']);
+        $provisioning = new LogRetentionDatabase(new RetentionDatabaseTestModel('AccessLog', 'access_logs', $this->pdo, $this->prefix), null, true);
+        $this->assertTrue($provisioning->acquireLock());
+        $provisioning->releaseLock();
+        $this->expectExceptionMessage('Retention requires transactional InnoDB log and checkpoint tables.');
+        $db->acquireLock();
+    }
+
     public function testNonTransactionalLogTableIsRejectedBeforeDeletion(): void
     {
         $table = $this->table('access_logs');
