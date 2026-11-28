@@ -29,6 +29,7 @@ class LogRetentionPostgresTest extends TestCase
         foreach (['audit_logs', 'access_logs', 'logs'] as $table) {
             $this->pdo->exec("CREATE TABLE " . $this->table($table) . " (id SERIAL PRIMARY KEY, created TIMESTAMP NOT NULL)");
         }
+        $this->pdo->exec("CREATE TABLE " . $this->table('scheduled_tasks') . " (id SERIAL PRIMARY KEY)");
         $this->pdo->exec("CREATE TABLE " . $this->table('admin_settings') . " (id SERIAL PRIMARY KEY, setting VARCHAR(255) UNIQUE NOT NULL, value TEXT NOT NULL)");
         $this->pdo->exec("CREATE TABLE " . $this->table('system_settings') . " (id SERIAL PRIMARY KEY, setting VARCHAR(255) UNIQUE NOT NULL, value BYTEA NOT NULL)");
     }
@@ -36,7 +37,7 @@ class LogRetentionPostgresTest extends TestCase
     protected function tearDown(): void
     {
         if ($this->pdo) {
-            foreach (['audit_logs', 'access_logs', 'logs', 'admin_settings', 'system_settings'] as $table) {
+            foreach (['audit_logs', 'access_logs', 'logs', 'admin_settings', 'system_settings', 'scheduled_tasks'] as $table) {
                 $this->pdo->exec("DROP TABLE IF EXISTS " . $this->table($table));
             }
         }
@@ -86,6 +87,19 @@ class LogRetentionPostgresTest extends TestCase
         } finally {
             $deletion->releaseLock();
         }
+    }
+
+    public function testProvisioningAndDisabledPolicyDoNotRequireAccessLogRelation(): void
+    {
+        $this->pdo->exec("DROP TABLE " . $this->table('access_logs'));
+        $model = $this->model('AccessLog', 'access_logs');
+        $db = new LogRetentionDatabase($model);
+        $this->assertSame('disabled', (new LogRetentionRunner())->run($db, static function () { return 0; })['status']);
+        $provisioning = new LogRetentionDatabase($model, null, true);
+        $this->assertTrue($provisioning->acquireLock());
+        $provisioning->releaseLock();
+        $this->expectExceptionMessage('Retention table is unavailable.');
+        $db->acquireLock();
     }
 
     public function testBoundedDeletionLockingAndCheckpointUpsert(): void
