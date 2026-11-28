@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * Traverse a snapshot of a log table's primary-key space in bounded batches.
- * The caller owns the database lock, cutoff, checkpoint storage and time budget.
+ * The caller owns the database lock, cutoff and execution policy.
  */
 final class LogRetentionSweep
 {
@@ -27,7 +27,6 @@ final class LogRetentionSweep
      * $processBatch($first, $last, $cutoff, $dryRun) counts or deletes rows
      * strictly older than the cutoff, and returns their count only on success.
      * A deletion must be committed before this callback returns.
-     * $saveCursor($cursor) persists progress; it is never called for a dry run.
      * $canContinue() verifies lock ownership, current policy and execution budget.
      */
     public function run(
@@ -36,10 +35,8 @@ final class LogRetentionSweep
         DateTimeImmutable $cutoff,
         callable $nextId,
         callable $processBatch,
-        callable $saveCursor,
         callable $canContinue,
-        bool $dryRun = false,
-        bool $atomicCheckpoint = false
+        bool $dryRun = false
     ): array {
         if ($cursor < 0 || $highWaterMark < $cursor) {
             throw new InvalidArgumentException('Invalid retention sweep bounds.');
@@ -52,9 +49,6 @@ final class LogRetentionSweep
                 break;
             }
             if ($first === null) {
-                if (!$dryRun) {
-                    $saveCursor($highWaterMark);
-                }
                 $cursor = $highWaterMark;
                 break;
             }
@@ -66,9 +60,6 @@ final class LogRetentionSweep
             $count = $processBatch($first, $last, $cutoff, $dryRun);
             if (!is_int($count) || $count < 0 || $count > $last - $first + 1) {
                 throw new UnexpectedValueException('Invalid retention batch result.');
-            }
-            if (!$dryRun && !$atomicCheckpoint) {
-                $saveCursor($last);
             }
             $cursor = $last;
             $affected += $count;

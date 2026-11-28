@@ -326,7 +326,6 @@ class LogRetentionDatabaseTest extends TestCase
             $result = (new LogRetentionSweep())->run(
                 0, $high, $cutoff, [$recovery, 'nextId'],
                 [$recovery, 'processBatch'],
-                static function () {},
                 static function () { return true; }
             );
             $this->assertTrue($result['complete']);
@@ -363,7 +362,6 @@ class LogRetentionDatabaseTest extends TestCase
             $result = (new LogRetentionSweep())->run(
                 0, $high, $cutoff, [$recovery, 'nextId'],
                 [$recovery, 'processBatch'],
-                static function () {},
                 static function () { return true; }
             );
             $this->assertTrue($result['complete']);
@@ -467,14 +465,14 @@ class LogRetentionDatabaseTest extends TestCase
             (30000, '2000-01-01 00:00:00'), (30001, '2099-01-01 00:00:00')");
         $db = $this->adapter('AccessLog', 'access_logs');
         $runner = new LogRetentionRunner();
-        $dry = $runner->run($db, static function () { return 30; }, true, 1800, 0);
+        $dry = $runner->run($db, static function () { return 30; }, true, 0);
         $this->assertSame('complete', $dry['status']);
         $this->assertSame(3, $dry['affected']);
         $this->assertSame([1, 10000, 30000, 30001], $this->ids('access_logs'));
         $reads = 0;
         $partial = $runner->run($db, static function () use (&$reads) {
             return ++$reads <= 3 ? 30 : 365;
-        }, false, 1800, 0);
+        }, false, 0);
         $this->assertSame('partial', $partial['status']);
         $this->assertSame('policy_changed', $partial['reason']);
         $this->assertSame(10000, $partial['cursor']);
@@ -482,7 +480,7 @@ class LogRetentionDatabaseTest extends TestCase
         $this->assertSame([30000, 30001], $this->ids('access_logs'));
         $this->assertFalse($db->ownsLock());
         $second = $this->adapter('AccessLog', 'access_logs', $this->connect());
-        $resumed = $runner->run($second, static function () { return 30; }, false, 1800, 0);
+        $resumed = $runner->run($second, static function () { return 30; }, false, 0);
         $this->assertSame('complete', $resumed['status']);
         $this->assertSame(30001, $resumed['cursor']);
         $this->assertSame(1, $resumed['affected']);

@@ -126,7 +126,6 @@ class LogRetentionPostgresTest extends TestCase
             $result = (new LogRetentionSweep())->run(
                 0, $high, $cutoff, [$recovery, 'nextId'],
                 [$recovery, 'processBatch'],
-                static function () {},
                 static function () { return true; }
             );
             $this->assertTrue($result['complete']);
@@ -160,7 +159,6 @@ class LogRetentionPostgresTest extends TestCase
             $result = (new LogRetentionSweep())->run(
                 0, $high, $cutoff, [$recovery, 'nextId'],
                 [$recovery, 'processBatch'],
-                static function () {},
                 static function () { return true; }
             );
             $this->assertTrue($result['complete']);

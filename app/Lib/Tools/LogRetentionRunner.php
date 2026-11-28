@@ -24,9 +24,9 @@ final class LogRetentionRunner
         $this->clock = $clock ?? new SystemClock();
     }
 
-    public function run($database, callable $readPolicy, bool $dryRun = false, int $runtimeSeconds = 1800, int $delayMicroseconds = 200000): array
+    public function run($database, callable $readPolicy, bool $dryRun = false, int $delayMicroseconds = 200000): array
     {
-        if ($runtimeSeconds <= 0 || $delayMicroseconds < 0) {
+        if ($delayMicroseconds < 0) {
             throw new InvalidArgumentException('Invalid retention execution limits.');
         }
         $started = hrtime(true);
@@ -37,14 +37,14 @@ final class LogRetentionRunner
         if (!$database->acquireLock()) {
             return ['status' => 'busy', 'reason' => 'busy', 'complete' => false, 'affected' => 0, 'batches' => 0, 'days' => $days, 'cutoff' => null, 'durationSeconds' => (hrtime(true) - $started) / 1e9, 'dryRun' => $dryRun];
         }
-        return $this->withOwnedLock($database, function () use ($database, $readPolicy, $days, $dryRun, $runtimeSeconds, $delayMicroseconds, $started) {
+        return $this->withOwnedLock($database, function () use ($database, $readPolicy, $days, $dryRun, $delayMicroseconds, $started) {
             $timezone = $database->storageTimezone();
             $cutoff = LogRetentionPolicy::cutoff($days, $this->clock->now()->setTimezone($timezone));
             $high = $database->highWaterMark();
             $cursor = 0;
             $reason = null;
             $blocked = false;
-            $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $timezone, $started, $runtimeSeconds, &$reason, &$blocked) {
+            $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $timezone, $started, &$reason, &$blocked) {
                 if (!$database->ownsLock()) {
                     throw new RuntimeException('Retention lock lost.');
                 }
@@ -63,10 +63,6 @@ final class LogRetentionRunner
                     $reason = 'clock_changed';
                     return false;
                 }
-                if ((hrtime(true) - $started) / 1e9 >= $runtimeSeconds) {
-                    $reason = 'runtime_limit';
-                    return false;
-                }
                 return true;
             };
             $firstBatch = true;
@@ -82,7 +78,6 @@ final class LogRetentionRunner
                     return $database->nextId($cursor, $high);
                 },
                 [$database, 'processBatch'],
-                static function () {},
                 $canContinue,
                 $dryRun
             );
@@ -128,7 +123,6 @@ final class LogRetentionRunner
                     return $database->nextId($cursor, $high);
                 },
                 [$database, 'processBatch'],
-                static function () {},
                 function () use ($database, $cutoff) {
                     if (!$database->ownsLock()) {
                         throw new RuntimeException('Retention lock lost.');
