@@ -35,7 +35,7 @@ class LogRetentionRunnerTest extends TestCase
         $this->assertSame(1, $result['affected']);
         $this->assertSame(10000, $result['cursor']);
         $this->assertFalse($database->locked);
-        $this->assertNotNull($database->checkpoint);
+        $this->assertNull($database->checkpoint);
     }
 
     public function testBlockedPolicyDoesNotMaskCleanupFailure(): void

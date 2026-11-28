@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/LogRetentionPolicy.php';
 require_once __DIR__ . '/LogRetentionConfigurationException.php';
-require_once __DIR__ . '/LogRetentionCheckpoint.php';
 require_once __DIR__ . '/LogRetentionSweep.php';
 require_once __DIR__ . '/LogRetentionCleanupException.php';
 require_once __DIR__ . '/SystemClock.php';
@@ -12,7 +11,7 @@ require_once __DIR__ . '/SystemClock.php';
 /**
  * Orchestrates a single table sweep. The policy reader must read current
  * configuration, not a cached Configure value.
- * Dry runs start from zero and never persist or resume a checkpoint. A partial
+ * Every invocation starts from zero without persistent execution state. A partial
  * dry run reports only the examined range, not a total count for the table.
  * Even a complete dry run is not a transactional snapshot of concurrent writes.
  */
@@ -42,10 +41,7 @@ final class LogRetentionRunner
             $timezone = $database->storageTimezone();
             $cutoff = LogRetentionPolicy::cutoff($days, $this->clock->now()->setTimezone($timezone));
             $high = $database->highWaterMark();
-            $state = $dryRun ? null : LogRetentionCheckpoint::resume($database->loadCheckpoint(), $days, $cutoff, $high);
-            $cursor = $state['cursor'] ?? 0;
-            $high = $state['highWaterMark'] ?? $high;
-            $cutoff = $state['cutoff'] ?? $cutoff;
+            $cursor = 0;
             $reason = null;
             $blocked = false;
             $canContinue = function () use ($database, $readPolicy, $days, $cutoff, $timezone, $started, $runtimeSeconds, &$reason, &$blocked) {
@@ -85,16 +81,10 @@ final class LogRetentionRunner
                     $firstBatch = false;
                     return $database->nextId($cursor, $high);
                 },
-                function ($first, $last, $cutoff, $dryRun) use ($database, $days, $high) {
-                    $checkpoint = $dryRun ? null : LogRetentionCheckpoint::encode($days, $cutoff, $last, $high);
-                    return $database->processBatch($first, $last, $cutoff, $dryRun, $checkpoint);
-                },
-                function ($cursor) use ($database, $days, $cutoff, $high) {
-                    $database->saveCheckpoint(LogRetentionCheckpoint::encode($days, $cutoff, $cursor, $high));
-                },
+                [$database, 'processBatch'],
+                static function () {},
                 $canContinue,
-                $dryRun,
-                true
+                $dryRun
             );
             $result['status'] = $blocked ? 'blocked' : ($result['complete'] ? 'complete' : 'partial');
             $result['reason'] = $reason;
@@ -107,7 +97,7 @@ final class LogRetentionRunner
 
     /**
      * Compatibility entry point for an explicit absolute cutoff. Preserve the
-     * legacy full-sweep return contract without touching scheduled checkpoints.
+     * legacy full-sweep return contract without persistent execution state.
      * Transactions are bounded; this manual operation has no sweep time limit.
      */
     public function runFixedCutoff($database, DateTimeImmutable $cutoff): int
