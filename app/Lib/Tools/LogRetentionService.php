@@ -57,15 +57,22 @@ final class LogRetentionService
     public static function runConfigured($model, string $configFile, bool $dryRun = false, ?DateTimeZone $logTimezone = null): array
     {
         $settings = ['AuditLog' => 'audit_log_retention_days', 'AccessLog' => 'access_log_retention_days', 'Log' => 'log_retention_days'];
-        $database = new LogRetentionDatabase($model, $logTimezone);
+        $readSetting = static function (string $name) use ($model): ?string {
+            return LogRetentionPolicyReader::readDatabaseSetting($model, $name);
+        };
         $setting = $settings[$model->alias];
         $started = hrtime(true);
         $days = null;
         try {
-            $days = LogRetentionPolicyReader::read($setting, $configFile, [$database, 'readPolicySetting']);
+            $days = LogRetentionPolicyReader::read($setting, $configFile, $readSetting);
+            if ($days === 0) {
+                return ['status' => 'disabled', 'reason' => 'disabled', 'complete' => false,
+                    'affected' => 0, 'batches' => 0, 'days' => 0, 'cutoff' => null,
+                    'durationSeconds' => (hrtime(true) - $started) / 1e9, 'dryRun' => $dryRun];
+            }
             $configuredTimezone = null;
             if ($model->alias !== 'AccessLog' && $days > 0) {
-                $configuredTimezone = LogRetentionPolicyReader::readTimezone($configFile, [$database, 'readPolicySetting']);
+                $configuredTimezone = LogRetentionPolicyReader::readTimezone($configFile, $readSetting);
                 if ($configuredTimezone !== LogRetentionPolicy::UNCONFIGURED_TIMEZONE) {
                     if ($logTimezone !== null && $logTimezone->getName() !== $configuredTimezone) {
                         throw new LogRetentionConfigurationException('CLI writer timezone conflicts with configured retention timezone.');
@@ -74,12 +81,12 @@ final class LogRetentionService
                 } elseif ($logTimezone === null) {
                     throw new LogRetentionConfigurationException('Configure the log writer timezone before enabling local log retention.');
                 }
-                $database->setWriterTimezone($logTimezone);
             }
-            $result = (new LogRetentionRunner())->run($database, static function () use ($database, $setting, $configFile, $model, $configuredTimezone) {
-                $days = LogRetentionPolicyReader::read($setting, $configFile, [$database, 'readPolicySetting']);
+            $database = new LogRetentionDatabase($model, $logTimezone);
+            $result = (new LogRetentionRunner())->run($database, static function () use ($readSetting, $setting, $configFile, $model, $configuredTimezone) {
+                $days = LogRetentionPolicyReader::read($setting, $configFile, $readSetting);
                 if ($days > 0 && $model->alias !== 'AccessLog' &&
-                    LogRetentionPolicyReader::readTimezone($configFile, [$database, 'readPolicySetting']) !== $configuredTimezone) {
+                    LogRetentionPolicyReader::readTimezone($configFile, $readSetting) !== $configuredTimezone) {
                     throw new LogRetentionConfigurationException('Retention writer timezone changed; restart the sweep with the current configuration.');
                 }
                 return $days;
@@ -105,16 +112,19 @@ final class LogRetentionService
         if (!is_numeric($days) || $days <= 0) {
             throw new InvalidArgumentException('Explicit retention requires a positive duration.');
         }
-        $database = new LogRetentionDatabase($model, $logTimezone);
+        $readSetting = static function (string $name) use ($model): ?string {
+            return LogRetentionPolicyReader::readDatabaseSetting($model, $name);
+        };
         if ($model->alias !== 'AccessLog' && $configFile !== null) {
-            $configuredTimezone = LogRetentionPolicyReader::readTimezone($configFile, [$database, 'readPolicySetting']);
+            $configuredTimezone = LogRetentionPolicyReader::readTimezone($configFile, $readSetting);
             if ($configuredTimezone !== LogRetentionPolicy::UNCONFIGURED_TIMEZONE) {
                 if ($logTimezone !== null && $logTimezone->getName() !== $configuredTimezone) {
                     throw new InvalidArgumentException('CLI writer timezone conflicts with configured retention timezone.');
                 }
-                $database->setWriterTimezone(new DateTimeZone($configuredTimezone));
+                $logTimezone = new DateTimeZone($configuredTimezone);
             }
         }
+        $database = new LogRetentionDatabase($model, $logTimezone);
         $cutoff = $legacyCutoff ?? LogRetentionPolicy::cutoff($days, (new SystemClock())->now()->setTimezone($database->storageTimezone()));
         $result = (new LogRetentionRunner())->runFixedCutoffResult($database, $cutoff, $dryRun);
         $result['days'] = $days;
