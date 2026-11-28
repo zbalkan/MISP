@@ -219,9 +219,7 @@ final class LogRetentionDatabase
 
     public function readPolicySetting(string $setting): ?string
     {
-        if ($this->model->getDataSource()->getConnection() !== $this->connection) {
-            throw new RuntimeException('Retention datasource connection changed.');
-        }
+        $this->assertSession();
         return LogRetentionPolicyReader::readDatabaseSetting($this->model, $setting);
     }
 
@@ -233,6 +231,7 @@ final class LogRetentionDatabase
         if (!$this->ownsLock()) {
             throw new RuntimeException('Retention checkpoint requires an owned database lock.');
         }
+        $this->assertSession();
         return AdminSetting::readInternalState($this->dialect, $this->checkpointKey);
     }
 
@@ -244,6 +243,7 @@ final class LogRetentionDatabase
         if (!$this->ownsLock() || $this->connection->inTransaction()) {
             throw new RuntimeException('Retention checkpoint requires an owned lock and no active transaction.');
         }
+        $this->assertSession();
         AdminSetting::writeInternalState($this->dialect, $this->checkpointKey, $value);
     }
 
@@ -337,6 +337,14 @@ final class LogRetentionDatabase
                 throw new LogRetentionCleanupException($e, $cleanupFailure);
             }
             throw $e;
+        }
+    }
+
+    private function assertSession(): void
+    {
+        if ($this->model->getDataSource()->getConnection() !== $this->connection ||
+            ($this->dialect !== null && $this->dialect->getDataSource()->getConnection() !== $this->connection)) {
+            throw new RuntimeException('Retention datasource connection changed.');
         }
     }
 
