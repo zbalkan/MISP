@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/LogRetentionTopology.php';
 
-/** Session-scoped advisory lock, independent of deletion and checkpoints. */
+/** Session-scoped advisory lock, for log deletion. */
 final class LogRetentionLock
 {
     private $connection;
@@ -15,7 +15,7 @@ final class LogRetentionLock
     private $locked = false;
     private $unusable = false;
 
-    public function __construct($model, bool $provisioning = false)
+    public function __construct($model)
     {
         $db = $model->getDataSource();
         $this->connection = $db->getConnection();
@@ -36,17 +36,16 @@ final class LogRetentionLock
         if (!is_string($database) || $database === '') {
             throw new RuntimeException('Retention database name unavailable.');
         }
-        $scope = $provisioning ? ':provisioning' : '';
-        $this->lockName = 'misp:retention:' . substr(hash('sha256', $database . ':' . $db->fullTableName($provisioning ? 'access_logs' : $model, false, false) . $scope), 0, 48);
+        $this->lockName = 'misp:retention:' . substr(hash('sha256', $database . ':' . $db->fullTableName($model, false, false)), 0, 48);
         if ($this->driver === 'pgsql') {
             // Advisory locks are database-local. Use the relation OID to
             // identify the same table even through different search paths.
-            $relation = $provisioning ? $db->fullTableName('scheduled_tasks') : $db->fullTableName($model);
+            $relation = $db->fullTableName($model);
             $oid = $this->scalar('SELECT CAST(to_regclass(?) AS oid)', [$relation]);
             if ($oid === null || $oid === false) {
                 throw new RuntimeException('Retention table is unavailable.');
             }
-            $this->pgLockOids = array_values(unpack('N2', hash('sha256', 'misp:retention:' . $oid . $scope, true)));
+            $this->pgLockOids = array_values(unpack('N2', hash('sha256', 'misp:retention:' . $oid, true)));
             $this->pgLockKeys = array_map(static function ($value) {
                 return $value > 2147483647 ? $value - 4294967296 : $value;
             }, $this->pgLockOids);

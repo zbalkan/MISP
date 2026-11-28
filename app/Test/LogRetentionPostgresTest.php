@@ -57,42 +57,12 @@ class LogRetentionPostgresTest extends TestCase
         return new RetentionPostgresModel($alias, $table, $pdo ?? $this->pdo, $this->prefix);
     }
 
-    public function testProvisioningLockIsIndependentOfDeletion(): void
-    {
-        $make = function (PDO $pdo, bool $provisioning) {
-            return $provisioning ? new LogRetentionLock($this->model('AccessLog', 'access_logs', $pdo), true) : new LogRetentionDatabase($this->model('AccessLog', 'access_logs', $pdo), new DateTimeZone('UTC'));
-        };
-        $deletion = $make($this->pdo, false);
-        $provisioning = $make($this->connect(), true);
-        $competitor = $make($this->connect(), true);
-        $this->assertTrue($deletion->acquireLock());
-        try {
-            $this->assertTrue($provisioning->acquireLock());
-            try {
-                $this->assertFalse($competitor->acquireLock());
-                $this->assertTrue($deletion->ownsLock());
-                $this->assertTrue($provisioning->ownsLock());
-                $this->assertFalse(method_exists($provisioning, 'loadCheckpoint'));
-            } finally {
-                $provisioning->releaseLock();
-            }
-            $this->assertTrue($competitor->acquireLock());
-            $competitor->releaseLock();
-            $this->assertTrue($deletion->ownsLock());
-        } finally {
-            $deletion->releaseLock();
-        }
-    }
-
-    public function testProvisioningAndDisabledPolicyDoNotRequireAccessLogRelation(): void
+    public function testDisabledPolicyDoesNotRequireAccessLogRelation(): void
     {
         $this->pdo->exec("DROP TABLE " . $this->table('access_logs'));
         $model = $this->model('AccessLog', 'access_logs');
         $db = new LogRetentionDatabase($model);
         $this->assertSame('disabled', (new LogRetentionRunner())->run($db, static function () { return 0; })['status']);
-        $provisioning = new LogRetentionLock($model, true);
-        $this->assertTrue($provisioning->acquireLock());
-        $provisioning->releaseLock();
         $this->expectExceptionMessage('Retention table is unavailable.');
         $db->acquireLock();
     }
