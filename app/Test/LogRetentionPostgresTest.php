@@ -23,21 +23,18 @@ class LogRetentionPostgresTest extends TestCase
         if (!class_exists('AppModel', false)) {
             class_alias(RetentionPostgresAppModel::class, 'AppModel');
         }
-        require_once __DIR__ . '/../Model/AdminSetting.php';
         $this->pdo = $this->connect();
         $this->prefix = 'retention_' . bin2hex(random_bytes(6)) . '_';
         foreach (['audit_logs', 'access_logs', 'logs'] as $table) {
             $this->pdo->exec("CREATE TABLE " . $this->table($table) . " (id SERIAL PRIMARY KEY, created TIMESTAMP NOT NULL)");
         }
-        $this->pdo->exec("CREATE TABLE " . $this->table('scheduled_tasks') . " (id SERIAL PRIMARY KEY)");
-        $this->pdo->exec("CREATE TABLE " . $this->table('admin_settings') . " (id SERIAL PRIMARY KEY, setting VARCHAR(255) UNIQUE NOT NULL, value TEXT NOT NULL)");
         $this->pdo->exec("CREATE TABLE " . $this->table('system_settings') . " (id SERIAL PRIMARY KEY, setting VARCHAR(255) UNIQUE NOT NULL, value BYTEA NOT NULL)");
     }
 
     protected function tearDown(): void
     {
         if ($this->pdo) {
-            foreach (['audit_logs', 'access_logs', 'logs', 'admin_settings', 'system_settings', 'scheduled_tasks'] as $table) {
+            foreach (['audit_logs', 'access_logs', 'logs', 'system_settings'] as $table) {
                 $this->pdo->exec("DROP TABLE IF EXISTS " . $this->table($table));
             }
         }

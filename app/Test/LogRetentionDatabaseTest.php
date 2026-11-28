@@ -24,7 +24,7 @@ class LogRetentionDatabaseTest extends TestCase
             $precision = $table === 'access_logs' ? '(4)' : '';
             $this->createTable($table, "id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, created DATETIME{$precision} NOT NULL");
         }
-        $this->createTable('admin_settings', 'setting VARCHAR(255) NOT NULL PRIMARY KEY, value TEXT NOT NULL');
+
         $this->createTable('system_settings', 'setting VARCHAR(255) NOT NULL PRIMARY KEY, value BLOB NOT NULL');
     }
 
@@ -73,39 +73,6 @@ class LogRetentionDatabaseTest extends TestCase
     {
         return array_map('intval', $this->pdo->query("SELECT id FROM " . $this->table($table) . " ORDER BY id")->fetchAll(PDO::FETCH_COLUMN));
     }
-
-    private function seedNativeRetentionTask(): void
-    {
-        class_alias(RetentionModelTestApp::class, 'App');
-        class_alias(RetentionModelTestBase::class, 'AppModel');
-        require_once __DIR__ . '/../Model/Task.php';
-        require_once __DIR__ . '/../Model/Job.php';
-        $this->createTable('scheduled_tasks', 'id INT PRIMARY KEY, type VARCHAR(100), action VARCHAR(40), user_id INT, enabled BOOLEAN, timer INT, next_execution_time INT, last_job_id INT NULL, message VARCHAR(255), last_run_at INT NULL');
-        $this->createTable('jobs', "id INT PRIMARY KEY, status INT NOT NULL, job_type VARCHAR(32) NOT NULL DEFAULT 'admin_action', job_input TEXT NOT NULL, org_id INT NOT NULL DEFAULT 0");
-        $table = $this->table('scheduled_tasks');
-        $jobs = $this->table('jobs');
-        $this->pdo->exec("INSERT INTO $table VALUES (1, 'Admin', 'enforceLogRetention', 0, TRUE, 86400, 100, NULL, '', NULL)");
-    }
-
-    private function nativeRetentionTask(PDO $pdo): Task
-    {
-        $task = new Task();
-        $task->table = 'scheduled_tasks';
-        $task->retentionDatasource = new RetentionDatabaseTestModel('Task', 'scheduled_tasks', $pdo, $this->prefix);
-        return $task;
-    }
-
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
-
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
-
-    /** @group benchmark */
 
     public function testConcurrentWriterAndHighWaterMark(): void
     {
@@ -215,10 +182,6 @@ class LogRetentionDatabaseTest extends TestCase
             $this->assertGreaterThan(10000, (int)$writer->lastInsertId());
         }
     }
-
-    /** @group benchmark */
-
-    /** @group benchmark */
 
     /**
      * @runInSeparateProcess
@@ -347,7 +310,7 @@ class LogRetentionDatabaseTest extends TestCase
         $high = $db->highWaterMark();
         $this->assertSame(2, $db->processBatch(1, 10000, $cutoff, false));
         $this->assertSame([2, 30000, 30001], $this->ids('access_logs'));
-        // Terminate the server session after commit, before checkpoint update.
+        // Terminate the server session after commit.
         $this->pdo->exec("KILL CONNECTION $connectionId");
         unset($db, $worker);
         $recovery = $this->adapter('AccessLog', 'access_logs', $this->connect());
@@ -563,7 +526,6 @@ class LogRetentionDatabaseTest extends TestCase
             $this->assertSame(1, $result['affected']);
             $this->assertSame([2], $this->ids($table));
         }
-        $this->assertSame(0, (int)$this->pdo->query("SELECT COUNT(*) FROM " . $this->table('admin_settings'))->fetchColumn());
 
         // Exercise the original public access-log method with a non-UTC cutoff.
         $model = (new ReflectionClass('AccessLog'))->newInstanceWithoutConstructor();
@@ -577,7 +539,6 @@ class LogRetentionDatabaseTest extends TestCase
         $this->assertSame(2, $model->deleteOldLogs($cutoff));
         $this->assertSame([2, 10001], $this->ids('access_logs'));
         $this->assertSame('2025-12-31 12:00:00+02:00', $cutoff->format('Y-m-d H:i:sP'));
-        $this->assertSame(0, (int)$this->pdo->query("SELECT COUNT(*) FROM " . $this->table('admin_settings'))->fetchColumn());
     }
 
     /**
@@ -753,7 +714,6 @@ class RetentionDatabaseTestModel
         if (!class_exists('AppModel', false)) {
             class_alias(RetentionModelTestBase::class, 'AppModel');
         }
-        require_once __DIR__ . '/../Model/AdminSetting.php';
         return new class($this) extends SqlDialect {
             public function flavour() { return self::FLAVOUR_MYSQL; }
         };
