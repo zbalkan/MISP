@@ -83,17 +83,6 @@ class TasksController extends AppController
         ];
     }
 
-    private function __assertNotManagedRetention($id, ?array $task = null): void
-    {
-        $task = $task ?? $this->Task->find('first', [
-            'conditions' => ['Task.id' => $id],
-            'recursive' => -1,
-        ]);
-        if ($task && Task::isManagedRetention($task['Task'])) {
-            throw new MethodNotAllowedException(__('Managed log retention is controlled by MISP retention settings.'));
-        }
-    }
-
     public function toggleEnabled($id)
     {
         if (!$this->_isSiteAdmin()) {
@@ -104,7 +93,6 @@ class TasksController extends AppController
             'recursive' => -1,
             'conditions' => array('Task.id' => $id)
         ));
-        $this->__assertNotManagedRetention($id, $task ?: []);
         if (empty($task)) {
             return $this->RestResponse->saveFailResponse('Task', 'toggleEnabled', $id, 'Invalid Task', $this->response->type());
         }
@@ -175,7 +163,6 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
-        $this->__assertNotManagedRetention($id);
 
         $this->set('dropdownData', $this->__getDropdownData());
 
@@ -270,7 +257,6 @@ class TasksController extends AppController
         if (!$this->_isSiteAdmin()) {
             throw new MethodNotAllowedException('You are not authorised to do that.');
         }
-        $this->__assertNotManagedRetention($id);
         $this->CRUD->delete($id);
         if ($this->IndexFilter->isRest()) {
             return $this->restResponsePayload;
@@ -299,7 +285,7 @@ class TasksController extends AppController
                     'recursive' => -1,
                     'conditions' => ['Task.id' => $taskId],
                 ]);
-                if (empty($task) || Task::isManagedRetention($task['Task'])) {
+                if (empty($task)) {
                     $failed++;
                     continue;
                 }
@@ -366,7 +352,6 @@ class TasksController extends AppController
             'conditions' => array('Task.id' => $id)
         ));
 
-        $this->__assertNotManagedRetention($id, $task ?: []);
         if (empty($task)) {
             if ($this->IndexFilter->isRest()) {
                 return $this->RestResponse->saveFailResponse('Task', 'forceRunTask', $id, __('Invalid Task'), $this->response->type());
@@ -606,9 +591,6 @@ class TasksController extends AppController
                 return;
             }
 
-            if ($data['Task']['admin_action'] === Task::RETENTION_ACTION) {
-                throw new MethodNotAllowedException(__('Managed log retention is provisioned automatically.'));
-            }
             if (!in_array($data['Task']['admin_action'], SchedulerWorkerShell::ADMIN_ACTIONS)) {
                 $this->Flash->error(__('Invalid admin action selected.'));
                 return;

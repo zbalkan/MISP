@@ -5,8 +5,6 @@ declare(strict_types=1);
 App::uses('Shell', 'Console');
 App::uses('AppShell', 'Console/Command');
 App::uses('Worker', 'Tools/BackgroundJobs');
-App::uses('LogRetentionLock', 'Tools');
-App::uses('LogRetentionPolicyReader', 'Tools');
 
 class SchedulerWorkerShell extends AppShell
 {
@@ -24,9 +22,6 @@ class SchedulerWorkerShell extends AppShell
     const DEFAULT_MAX_EXECUTION_TIME = 0; // unlimited
 
     const LOOP_INTERVAL = 10;
-
-    private $nextRetentionCheck = 0;
-    private $nextRetentionDiagnostic = 0;
 
     /** Upper bound of the back-off applied while the database is unreachable. */
     const MAX_DB_BACKOFF = 60;
@@ -90,7 +85,6 @@ class SchedulerWorkerShell extends AppShell
                 continue;
             }
 
-            $this->provisionRetentionTask();
             $now = time();
 
             try {
@@ -110,53 +104,15 @@ class SchedulerWorkerShell extends AppShell
             }
 
             foreach ($tasks as $task) {
-                $taskJob = $task['Job'] ?? null;
                 $task = $task['Task'];
                 try {
-                    $this->processTask($task, $taskJob);
+                    $this->processTask($task);
                 } catch (Throwable $e) {
                     $this->logMessage('error', $task['id'], "failed to process task: " . $e->getMessage());
                 }
             }
 
             sleep(self::LOOP_INTERVAL);
-        }
-    }
-
-    private function retentionEnabled(): bool
-    {
-        return LogRetentionPolicyReader::anyEnabled(
-            APP . 'Config' . DS . 'config.php',
-            function (string $setting): ?string {
-                return LogRetentionPolicyReader::readDatabaseSetting($this->Task, $setting);
-            },
-            static function ($name, $error) {
-                CakeLog::error("Log retention policy $name is blocked: " . $error->getMessage());
-            }
-        );
-    }
-
-    private function provisionRetentionTask(): void
-    {
-        if (hrtime(true) < $this->nextRetentionCheck) {
-            return;
-        }
-        $this->nextRetentionCheck = hrtime(true) + 60_000_000_000;
-        try {
-            if (!$this->retentionEnabled()) {
-                return;
-            }
-            $database = new LogRetentionLock($this->Task, true);
-            if (!$database->acquireLock()) {
-                return;
-            }
-            try {
-                $this->Task->ensureRetentionTask(time());
-            } finally {
-                $database->releaseLock();
-            }
-        } catch (Throwable $e) {
-            CakeLog::error('Managed retention task provisioning failed: ' . $e->getMessage());
         }
     }
 
@@ -222,27 +178,9 @@ class SchedulerWorkerShell extends AppShell
         }
     }
 
-    private function processTask(array $task, ?array $taskJob = null)
+    private function processTask(array $task)
     {
         $this->logMessage('info', $task['id'], "processing task: {$task['type']}");
-
-        if (Task::isManagedRetention($task)) {
-            if (!$this->retentionEnabled()) {
-                return;
-            }
-            $claim = $this->Task->claimRetentionExecution($task, time());
-            if ($claim !== null) {
-                $task['retention_claim'] = $claim;
-                $this->runAdminTask($task);
-            } elseif (hrtime(true) >= $this->nextRetentionDiagnostic) {
-                $reason = Task::retentionBlockReason($task, $taskJob, time());
-                if ($reason !== null) {
-                    $this->nextRetentionDiagnostic = hrtime(true) + 300_000_000_000;
-                    $this->logMessage('warning', $task['id'], $reason);
-                }
-            }
-            return;
-        }
 
         if (isset($task['Job']) && $task['Job']['status'] === Job::STATUS_RUNNING) {
             $this->logMessage('info', $task['id'], "job is already running for this task: {$task['last_job_id']}");
@@ -304,8 +242,6 @@ class SchedulerWorkerShell extends AppShell
             } catch (Throwable $e) {
                 CakeLog::error("[WORKER PID: {$this->worker->pid()}][{$this->worker->queue()}] - Task ID: {$taskId} - could not persist task message: " . $e->getMessage());
             }
-        } elseif ($type === 'warning') {
-            CakeLog::warning("[WORKER PID: {$this->worker->pid()}][{$this->worker->queue()}] - Task ID: {$taskId} - {$message}");
         } else {
             CakeLog::info("[WORKER PID: {$this->worker->pid()}][{$this->worker->queue()}] - Task ID: {$taskId} - {$message}");
         }
@@ -757,11 +693,7 @@ class SchedulerWorkerShell extends AppShell
             return;
         }
 
-        $managed = Task::isManagedRetention($task);
-        if ($managed && (!isset($task['retention_claim']) || (int)$task['user_id'] !== 0)) {
-            throw new RuntimeException('Managed retention requires an atomic task claim.');
-        }
-        $user = $managed ? 'SYSTEM' : $this->User->getAuthUser($task['user_id']);
+        $user = $this->User->getAuthUser($task['user_id']);
         if (empty($user)) {
             $this->logMessage('error', $task['id'], "user ID do not match an existing user.");
             return;
@@ -796,11 +728,6 @@ class SchedulerWorkerShell extends AppShell
             ];
         }
 
-        if ($managed && !$this->Task->attachRetentionJob((int)$task['id'], $task['retention_claim'], $jobId)) {
-            $this->Job->saveStatus($jobId, false, __('Retention dispatch claim no longer valid.'));
-            return;
-        }
-
         // Enqueue the admin action
         $this->getBackgroundJobsTool()->enqueue(
             BackgroundJobsTool::DEFAULT_QUEUE,
@@ -810,14 +737,12 @@ class SchedulerWorkerShell extends AppShell
             $jobId
         );
 
-        if (!$managed) {
-            $this->Task->save([
-                'id' => $task['id'],
-                'last_job_id' => $jobId,
-                'message' => 'Enqueued',
-                'last_run_at' => time()
-            ]);
-        }
+        $this->Task->save([
+            'id' => $task['id'],
+            'last_job_id' => $jobId,
+            'message' => 'Enqueued',
+            'last_run_at' => time()
+        ]);
 
         $this->logMessage('info', $task['id'], "enqueued Admin Action: {$task['action']}.");
     }

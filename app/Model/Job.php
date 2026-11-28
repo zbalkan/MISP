@@ -3,8 +3,7 @@ App::uses('AppModel', 'Model');
 
 class Job extends AppModel
 {
-    const STATUS_CREATED = 0,
-        STATUS_WAITING = 1,
+    const STATUS_WAITING = 1,
         STATUS_RUNNING = 2,
         STATUS_FAILED = 3,
         STATUS_COMPLETED = 4;
@@ -25,24 +24,6 @@ class Job extends AppModel
             'fields' => array('id', 'name', 'uuid')
         ),
     );
-
-    /**
-     * The managed retention task uses its last job as a durable dispatch
-     * guard. Keep that row, and any nonterminal retention job that may not
-     * yet have been attached. Historical terminal jobs remain purgeable.
-     *
-     * The predicate is evaluated by the database, not a cached list of IDs.
-     */
-    public function purgeableJobCondition(): string
-    {
-        $tasks = $this->getDataSource()->fullTableName('scheduled_tasks');
-        $failed = self::STATUS_FAILED;
-        $completed = self::STATUS_COMPLETED;
-        return "id NOT IN (SELECT last_job_id FROM $tasks
-            WHERE type = 'Admin' AND action = 'enforceLogRetention' AND last_job_id IS NOT NULL)
-            AND NOT (job_type = 'admin_action' AND job_input = 'enforceLogRetention'
-                AND org_id = 0 AND status NOT IN ($failed, $completed))";
-    }
 
     public function beforeValidate($options = array())
     {
@@ -113,7 +94,7 @@ class Job extends AppModel
     {
         $job = [
             'worker' => $worker,
-            'status' => self::STATUS_CREATED,
+            'status' => 0,
             'retries' => 0,
             'org_id' => $user === 'SYSTEM' ? 0 : $user['org_id'],
             'job_type' => $jobType,
