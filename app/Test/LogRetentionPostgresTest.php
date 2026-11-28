@@ -60,7 +60,7 @@ class LogRetentionPostgresTest extends TestCase
     public function testProvisioningLockIsIndependentOfDeletion(): void
     {
         $make = function (PDO $pdo, bool $provisioning) {
-            return new LogRetentionDatabase($this->model('AccessLog', 'access_logs', $pdo), new DateTimeZone('UTC'), $provisioning);
+            return $provisioning ? new LogRetentionLock($this->model('AccessLog', 'access_logs', $pdo), true) : new LogRetentionDatabase($this->model('AccessLog', 'access_logs', $pdo), new DateTimeZone('UTC'));
         };
         $deletion = $make($this->pdo, false);
         $provisioning = $make($this->connect(), true);
@@ -72,12 +72,7 @@ class LogRetentionPostgresTest extends TestCase
                 $this->assertFalse($competitor->acquireLock());
                 $this->assertTrue($deletion->ownsLock());
                 $this->assertTrue($provisioning->ownsLock());
-                try {
-                    $provisioning->loadCheckpoint();
-                    $this->fail('Provisioning lock must not authorise checkpoint access.');
-                } catch (LogicException $e) {
-                    $this->assertStringContainsString('Provisioning lock', $e->getMessage());
-                }
+                $this->assertFalse(method_exists($provisioning, 'loadCheckpoint'));
             } finally {
                 $provisioning->releaseLock();
             }
@@ -95,7 +90,7 @@ class LogRetentionPostgresTest extends TestCase
         $model = $this->model('AccessLog', 'access_logs');
         $db = new LogRetentionDatabase($model);
         $this->assertSame('disabled', (new LogRetentionRunner())->run($db, static function () { return 0; })['status']);
-        $provisioning = new LogRetentionDatabase($model, null, true);
+        $provisioning = new LogRetentionLock($model, true);
         $this->assertTrue($provisioning->acquireLock());
         $provisioning->releaseLock();
         $this->expectExceptionMessage('Retention table is unavailable.');

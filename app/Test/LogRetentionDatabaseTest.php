@@ -499,7 +499,7 @@ class LogRetentionDatabaseTest extends TestCase
     public function testProvisioningLockIsIndependentOfDeletion(): void
     {
         $make = function (PDO $pdo, bool $provisioning) {
-            return new LogRetentionDatabase(new RetentionDatabaseTestModel('AccessLog', 'access_logs', $pdo, $this->prefix), new DateTimeZone('UTC'), $provisioning);
+            return $provisioning ? new LogRetentionLock(new RetentionDatabaseTestModel('AccessLog', 'access_logs', $pdo, $this->prefix), true) : new LogRetentionDatabase(new RetentionDatabaseTestModel('AccessLog', 'access_logs', $pdo, $this->prefix), new DateTimeZone('UTC'));
         };
         $deletion = $make($this->pdo, false);
         $provisioning = $make($this->connect(), true);
@@ -511,12 +511,7 @@ class LogRetentionDatabaseTest extends TestCase
                 $this->assertFalse($competitor->acquireLock());
                 $this->assertTrue($deletion->ownsLock());
                 $this->assertTrue($provisioning->ownsLock());
-                try {
-                    $provisioning->loadCheckpoint();
-                    $this->fail('Provisioning lock must not authorise checkpoint access.');
-                } catch (LogicException $e) {
-                    $this->assertStringContainsString('Provisioning lock', $e->getMessage());
-                }
+                $this->assertFalse(method_exists($provisioning, 'loadCheckpoint'));
             } finally {
                 $provisioning->releaseLock();
             }
@@ -557,7 +552,7 @@ class LogRetentionDatabaseTest extends TestCase
         $this->pdo->exec("ALTER TABLE $table ENGINE=MyISAM");
         $db = $this->adapter('AccessLog', 'access_logs');
         $this->assertSame('disabled', (new LogRetentionRunner())->run($db, static function () { return 0; })['status']);
-        $provisioning = new LogRetentionDatabase(new RetentionDatabaseTestModel('AccessLog', 'access_logs', $this->pdo, $this->prefix), null, true);
+        $provisioning = new LogRetentionLock(new RetentionDatabaseTestModel('AccessLog', 'access_logs', $this->pdo, $this->prefix), true);
         $this->assertTrue($provisioning->acquireLock());
         $provisioning->releaseLock();
         $this->expectExceptionMessage('Retention requires transactional InnoDB log and checkpoint tables.');

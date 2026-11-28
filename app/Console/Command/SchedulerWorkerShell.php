@@ -146,7 +146,7 @@ class SchedulerWorkerShell extends AppShell
             if (!$this->retentionEnabled()) {
                 return;
             }
-            $database = new LogRetentionDatabase(ClassRegistry::init('AccessLog'), null, true);
+            $database = new LogRetentionLock($this->Task, true);
             if (!$database->acquireLock()) {
                 return;
             }
