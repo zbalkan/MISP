@@ -126,12 +126,12 @@ class LogRetentionDatabaseTest extends TestCase
                 $writer->exec("INSERT INTO $table (id, created) VALUES (5000, '2000-01-01'), (20001, '2000-01-01')");
                 $insertMs = (hrtime(true) - $start) / 1e6;
                 $result = (new LogRetentionSweep())->run(10000, $high, $cutoff,
-                    [$db, 'nextId'], [$db, 'processBatch'], static function () {}, [$db, 'ownsLock']);
+                    [$db, 'nextId'], [$db, 'processBatch'], [$db, 'ownsLock']);
                 $this->assertTrue($result['complete']);
                 $this->assertSame(1, $result['affected']);
                 $this->assertSame([5000, 20001], $this->ids('access_logs'));
                 $next = (new LogRetentionSweep())->run(0, $db->highWaterMark(), $cutoff,
-                    [$db, 'nextId'], [$db, 'processBatch'], static function () {}, [$db, 'ownsLock']);
+                    [$db, 'nextId'], [$db, 'processBatch'], [$db, 'ownsLock']);
                 $this->assertSame(2, $next['affected']);
                 $this->assertSame([], $this->ids('access_logs'));
                 fwrite(STDOUT, json_encode([

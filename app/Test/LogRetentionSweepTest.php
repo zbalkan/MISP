@@ -8,7 +8,7 @@ require_once __DIR__ . '/../Lib/Tools/LogRetentionSweep.php';
 
 class LogRetentionSweepTest extends TestCase
 {
-    private function executeSweep(array &$rows, array &$saved, int $cursor = 0, bool $dryRun = false, ?callable $canContinue = null): array
+    private function executeSweep(array &$rows, int $cursor = 0, bool $dryRun = false, ?callable $canContinue = null): array
     {
         $cutoff = new DateTimeImmutable('2026-01-01 00:00:00');
         return (new LogRetentionSweep(3))->run(
@@ -35,9 +35,6 @@ class LogRetentionSweepTest extends TestCase
                 }
                 return $count;
             },
-            static function ($cursor) use (&$saved) {
-                $saved[] = $cursor;
-            },
             $canContinue ?? static function () { return true; },
             $dryRun
         );
@@ -46,60 +43,51 @@ class LogRetentionSweepTest extends TestCase
     public function testSparseAndNonChronologicalRowsWithExactCutoff(): void
     {
         $rows = [1 => '2026-01-02', 3 => '2026-01-01', 7 => '2025-12-31', 12 => '2025-12-30', 13 => '2025-12-29'];
-        $saved = [];
-        $result = $this->executeSweep($rows, $saved);
+        $result = $this->executeSweep($rows);
         $this->assertSame([1, 3, 13], array_keys($rows));
-        $this->assertSame([3, 9, 12], $saved);
         $this->assertSame(2, $result['affected']);
         $this->assertTrue($result['complete']);
     }
 
-    public function testDryRunDoesNotChangeRowsOrCheckpoint(): void
+    public function testDryRunDoesNotChangeRows(): void
     {
         $rows = [1 => '2025-12-31', 12 => '2026-01-01'];
         $original = $rows;
-        $saved = [];
-        $result = $this->executeSweep($rows, $saved, 0, true);
+        $result = $this->executeSweep($rows, 0, true);
         $this->assertSame($original, $rows);
-        $this->assertSame([], $saved);
         $this->assertSame(1, $result['affected']);
         $this->assertTrue($result['complete']);
     }
 
-    public function testPolicyChangeStopsBeforeNextBatchAndAllowsResume(): void
+    public function testPolicyChangeStopsBeforeNextBatchAndAllowsRetry(): void
     {
         $rows = [1 => '2025-12-31', 7 => '2025-12-31'];
-        $saved = [];
-        $result = $this->executeSweep($rows, $saved, 0, false, static function () use (&$saved) { return !$saved; });
+        $result = $this->executeSweep($rows, 0, false, static function () use (&$rows) { return isset($rows[1]); });
         $this->assertFalse($result['complete']);
         $this->assertSame(3, $result['cursor']);
         $this->assertSame([7], array_keys($rows));
-        $result = $this->executeSweep($rows, $saved, $result['cursor']);
+        $result = $this->executeSweep($rows);
         $this->assertTrue($result['complete']);
         $this->assertSame([], $rows);
     }
 
     public function testBatchFailureDoesNotAdvanceCursor(): void
     {
-        $saved = [];
         try {
             (new LogRetentionSweep())->run(0, 10, new DateTimeImmutable(), static function () { return 1; }, static function () {
                 throw new RuntimeException('Database failure');
-            }, static function ($cursor) use (&$saved) { $saved[] = $cursor; }, static function () { return true; });
+            }, static function () { return true; });
             $this->fail('Expected database failure');
         } catch (RuntimeException $e) {
             $this->assertSame('Database failure', $e->getMessage());
         }
-        $this->assertSame([], $saved);
     }
 
     public function testEmptyRemainingRangeCompletesSweep(): void
     {
         $rows = [];
-        $saved = [];
-        $result = $this->executeSweep($rows, $saved);
+        $result = $this->executeSweep($rows);
         $this->assertTrue($result['complete']);
-        $this->assertSame([12], $saved);
         $this->assertSame(0, $result['batches']);
     }
 
@@ -112,7 +100,6 @@ class LogRetentionSweepTest extends TestCase
                 $this->assertLessThanOrEqual(LogRetentionSweep::MAX_BATCH_SIZE, $last - $first + 1);
                 return 0;
             },
-            static function () {},
             static function () { return true; }
         );
         $this->assertSame(2, $result['batches']);
@@ -125,14 +112,13 @@ class LogRetentionSweepTest extends TestCase
         new LogRetentionSweep(LogRetentionSweep::MAX_BATCH_SIZE + 1);
     }
 
-    public function testPolicyChangeAfterNextIdPreventsBatchAndCheckpoint(): void
+    public function testPolicyChangeAfterNextIdPreventsBatch(): void
     {
         $allowed = true;
         $result = (new LogRetentionSweep())->run(
             0, 10, new DateTimeImmutable(),
             static function () use (&$allowed) { $allowed = false; return 1; },
             function () { $this->fail('Batch executed after policy change.'); },
-            function () { $this->fail('Checkpoint advanced after policy change.'); },
             static function () use (&$allowed) { return $allowed; }
         );
         $this->assertSame(0, $result['cursor']);
@@ -142,6 +128,6 @@ class LogRetentionSweepTest extends TestCase
     public function testInvalidBatchResultCannotAdvanceCursor(): void
     {
         $this->expectException(UnexpectedValueException::class);
-        (new LogRetentionSweep(3))->run(0, 10, new DateTimeImmutable(), static function () { return 1; }, static function () { return false; }, function () { $this->fail('Checkpoint advanced'); }, static function () { return true; });
+        (new LogRetentionSweep(3))->run(0, 10, new DateTimeImmutable(), static function () { return 1; }, static function () { return false; }, static function () { return true; });
     }
 }
