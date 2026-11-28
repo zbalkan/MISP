@@ -54,12 +54,10 @@ final class LogRetentionDatabase
 
     private function initialiseLock(): void
     {
+        $this->assertSession();
         $model = $this->model;
         $db = $model->getDataSource();
         $provisioning = $this->provisioning;
-        if ($db->getConnection() !== $this->connection) {
-            throw new RuntimeException('Retention datasource connection changed.');
-        }
         $this->driver = $this->connection->getAttribute(PDO::ATTR_DRIVER_NAME);
         if (!in_array($this->driver, ['mysql', 'pgsql'], true)) {
             throw new RuntimeException('Unsupported retention database driver.');
