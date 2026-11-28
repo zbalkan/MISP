@@ -126,7 +126,12 @@ final class LogRetentionDatabase
             if ($this->unusable) {
                 throw new RuntimeException('Retention session must be closed after an uncertain transaction outcome.');
             }
-            $this->lock->releaseLock();
+            try {
+                $this->lock->releaseLock();
+            } catch (Throwable $e) {
+                $this->unusable = true;
+                throw $e;
+            }
         }
     }
 
