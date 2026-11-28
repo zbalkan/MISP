@@ -300,6 +300,8 @@ class SchedulerWorkerShell extends AppShell
             } catch (Throwable $e) {
                 CakeLog::error("[WORKER PID: {$this->worker->pid()}][{$this->worker->queue()}] - Task ID: {$taskId} - could not persist task message: " . $e->getMessage());
             }
+        } elseif ($type === 'warning') {
+            CakeLog::warning("[WORKER PID: {$this->worker->pid()}][{$this->worker->queue()}] - Task ID: {$taskId} - {$message}");
         } else {
             CakeLog::info("[WORKER PID: {$this->worker->pid()}][{$this->worker->queue()}] - Task ID: {$taskId} - {$message}");
         }
