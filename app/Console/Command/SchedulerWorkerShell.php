@@ -5,7 +5,7 @@ declare(strict_types=1);
 App::uses('Shell', 'Console');
 App::uses('AppShell', 'Console/Command');
 App::uses('Worker', 'Tools/BackgroundJobs');
-App::uses('LogRetentionDatabase', 'Tools');
+App::uses('LogRetentionLock', 'Tools');
 App::uses('LogRetentionPolicyReader', 'Tools');
 
 class SchedulerWorkerShell extends AppShell
