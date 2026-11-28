@@ -21,6 +21,7 @@ final class LogRetentionDatabase
     private $mysqlDatabase;
     private $mysqlTables;
     private $storageTimezone;
+    private $model;
     private $table;
     private $lockName;
     private $settingsTable;
@@ -36,6 +37,7 @@ final class LogRetentionDatabase
     public function __construct($model, ?DateTimeZone $logTimezone = null, bool $provisioning = false)
     {
         $this->provisioning = $provisioning;
+        $this->model = $model;
         if ($provisioning && $model->alias !== 'AccessLog') {
             throw new InvalidArgumentException('Provisioning lock requires the AccessLog datasource.');
         }
@@ -49,6 +51,21 @@ final class LogRetentionDatabase
         $this->table = $db->fullTableName($model);
         $this->settingsTable = $db->fullTableName('system_settings');
         $this->checkpointKey = 'log_retention_checkpoint_' . $model->table;
+    }
+
+    public function setWriterTimezone(DateTimeZone $timezone): void
+    {
+        if ($this->locked || $this->model->alias === 'AccessLog') {
+            throw new LogicException('Cannot change retention storage timezone.');
+        }
+        $this->storageTimezone = $timezone;
+    }
+
+    private function initialiseLock(): void
+    {
+        $model = $this->model;
+        $db = $model->getDataSource();
+        $provisioning = $this->provisioning;
         $this->driver = $this->connection->getAttribute(PDO::ATTR_DRIVER_NAME);
         if (!in_array($this->driver, ['mysql', 'pgsql'], true)) {
             throw new RuntimeException('Unsupported retention database driver.');
@@ -111,6 +128,7 @@ final class LogRetentionDatabase
         if ($this->locked) {
             throw new LogicException('Retention lock already acquired.');
         }
+        $this->initialiseLock();
         if ($this->driver === 'pgsql') {
             if ((int)$this->scalar('SELECT CASE WHEN pg_is_in_recovery() THEN 1 ELSE 0 END', []) === 1 ||
                 (int)$this->scalar("SELECT COUNT(*) FROM pg_extension WHERE extname IN ('bdr', 'pglogical')", []) > 0) {
@@ -134,7 +152,7 @@ final class LogRetentionDatabase
         } finally {
             $statement->closeCursor();
         }
-        foreach ($this->mysqlTables as $table) {
+        foreach ($this->provisioning ? [] : $this->mysqlTables as $table) {
             $statement = $this->execute('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [$this->mysqlDatabase, $table]);
             try {
                 $engines = $statement->fetchAll(PDO::FETCH_COLUMN);
