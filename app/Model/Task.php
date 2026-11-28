@@ -95,6 +95,14 @@ class Task extends AppModel
         }
         $table = $db->fullTableName($this);
         $jobs = $db->fullTableName('jobs');
+        // Fail closed if the managed schedule is not unique.
+        $count = $this->find('count', [
+            'conditions' => ['Task.type' => 'Admin', 'Task.action' => self::RETENTION_ACTION],
+            'recursive' => -1,
+        ]);
+        if ((int)$count !== 1) {
+            return null;
+        }
         $next = $now + self::RETENTION_INTERVAL;
         $statement = $pdo->prepare("UPDATE $table SET next_execution_time = ?, last_job_id = NULL
             WHERE id = ? AND type = 'Admin' AND action = ? AND user_id = 0 AND enabled = TRUE
