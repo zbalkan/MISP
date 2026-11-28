@@ -642,7 +642,7 @@ class LogRetentionDatabaseTest extends TestCase
         $this->fail('Database did not release the disconnected session lock within five seconds.');
     }
 
-    public function testCommitExceptionDoesNotAdvanceCheckpoint(): void
+    public function testCommitExceptionPreservesAtomicDeletionAndCheckpoint(): void
     {
         foreach ([false, true] as $committed) {
             $table = $this->table('access_logs');
@@ -672,18 +672,21 @@ class LogRetentionDatabaseTest extends TestCase
                 $db->saveCheckpoint($checkpoint);
                 try {
                     (new LogRetentionSweep())->run(
-                        0, $high, $cutoff, [$db, 'nextId'], [$db, 'processBatch'],
+                        0, $high, $cutoff, [$db, 'nextId'],
+                        function ($first, $last, $cutoff, $dryRun) use ($db, $high) {
+                            return $db->processBatch($first, $last, $cutoff, $dryRun, LogRetentionCheckpoint::encode(30, $cutoff, $last, $high));
+                        },
                         function ($cursor) use ($db, $cutoff, $high) {
                             $db->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, $cursor, $high));
                         },
-                        static function () { return true; }
+                        static function () { return true; }, false, true
                     );
                     $this->fail('Expected injected commit exception.');
                 } catch (PDOException $e) {
                     $this->assertSame('Injected commit acknowledgement failure.', $e->getMessage());
                 }
                 $this->assertFalse($worker->inTransaction());
-                $this->assertSame($checkpoint, $db->loadCheckpoint());
+                $this->assertSame($committed ? LogRetentionCheckpoint::encode(30, $cutoff, 10000, $high) : $checkpoint, $db->loadCheckpoint());
                 $this->assertSame($committed ? [2, 30000, 30001] : [1, 2, 10000, 30000, 30001], $this->ids('access_logs'));
             } finally {
                 $db->releaseLock();
@@ -693,11 +696,14 @@ class LogRetentionDatabaseTest extends TestCase
             try {
                 $state = LogRetentionCheckpoint::resume($recovery->loadCheckpoint(), 30, $cutoff, $high);
                 $result = (new LogRetentionSweep())->run(
-                    $state['cursor'], $high, $cutoff, [$recovery, 'nextId'], [$recovery, 'processBatch'],
+                    $state['cursor'], $high, $cutoff, [$recovery, 'nextId'],
+                    function ($first, $last, $cutoff, $dryRun) use ($recovery, $high) {
+                        return $recovery->processBatch($first, $last, $cutoff, $dryRun, LogRetentionCheckpoint::encode(30, $cutoff, $last, $high));
+                    },
                     function ($cursor) use ($recovery, $cutoff, $high) {
                         $recovery->saveCheckpoint(LogRetentionCheckpoint::encode(30, $cutoff, $cursor, $high));
                     },
-                    static function () { return true; }
+                    static function () { return true; }, false, true
                 );
                 $this->assertTrue($result['complete']);
                 $this->assertSame($committed ? 1 : 3, $result['affected']);
@@ -706,6 +712,32 @@ class LogRetentionDatabaseTest extends TestCase
             } finally {
                 $recovery->releaseLock();
             }
+        }
+    }
+
+    public function testCheckpointWriteFailureRollsBackDeletion(): void
+    {
+        $table = $this->table('access_logs');
+        $settings = $this->table('admin_settings');
+        $this->pdo->exec("INSERT INTO $table (id, created) VALUES (1, '2025-01-01'), (2, '2026-01-01')");
+        $cutoff = new DateTimeImmutable('2026-01-01', new DateTimeZone('UTC'));
+        $db = $this->adapter('AccessLog', 'access_logs');
+        $this->assertTrue($db->acquireLock());
+        try {
+            $initial = LogRetentionCheckpoint::encode(30, $cutoff, 0, 2);
+            $db->saveCheckpoint($initial);
+            $this->pdo->exec("ALTER TABLE $settings ADD CHECK (value = " . $this->pdo->quote($initial) . ")");
+            try {
+                $db->processBatch(1, 2, $cutoff, false, LogRetentionCheckpoint::encode(30, $cutoff, 2, 2));
+                $this->fail('Expected checkpoint constraint violation.');
+            } catch (PDOException $e) {
+                $this->assertSame('23', substr((string)$e->getCode(), 0, 2));
+            }
+            $this->assertFalse($this->pdo->inTransaction());
+            $this->assertSame([1, 2], array_map('intval', $this->pdo->query("SELECT id FROM $table ORDER BY id")->fetchAll(PDO::FETCH_COLUMN)));
+            $this->assertSame($initial, $db->loadCheckpoint());
+        } finally {
+            $db->releaseLock();
         }
     }
 
